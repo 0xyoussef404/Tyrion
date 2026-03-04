@@ -1029,7 +1029,7 @@ main() {
         if command -v gospider &> /dev/null; then
             print_info "Running Gospider..."
             print_skip_hint
-            run_with_skip "gospider" "gospider -S live_hosts.txt -o gospider_output --quiet 2>/dev/null"
+            run_with_skip "gospider" "gospider -S live_hosts.txt -o gospider_output 2>/dev/null"
             local exit_code=$?
             if [ $exit_code -eq 0 ]; then
                 print_success "Gospider completed"
