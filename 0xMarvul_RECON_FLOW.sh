@@ -29,6 +29,7 @@ ENABLE_PORT_SCAN=false
 ENABLE_PARALLEL=false
 ENABLE_MOREURLS=false
 ENABLE_GREP=false
+ENABLE_GOWITNESS=false
 
 # Skip functionality variables
 CURRENT_TOOL_PID=""
@@ -115,9 +116,14 @@ run_with_skip() {
     
     # Monitor for ENTER key or process completion
     while kill -0 "$CURRENT_TOOL_PID" 2>/dev/null; do
-        # Check for ENTER key (non-blocking read with short timeout)
-        if read -t 0.5 -n 1 key 2>/dev/null; then
-            if [[ -z "$key" ]]; then  # ENTER key (empty when read with -n 1)
+        # Check for ENTER key only (non-blocking read with short timeout)
+        # Read one char; ENTER produces an empty string with -n 1
+        # We use IFS= to preserve whitespace and check explicitly for $'\n' or empty
+        IFS= read -t 0.5 -r -n 1 key 2>/dev/null
+        local read_exit=$?
+        if [ $read_exit -eq 0 ]; then
+            # A key was pressed - only skip if it was ENTER (key is empty or \n)
+            if [[ "$key" == "" || "$key" == $'\n' || "$key" == $'\r' ]]; then
                 kill "$CURRENT_TOOL_PID" 2>/dev/null
                 wait "$CURRENT_TOOL_PID" 2>/dev/null
                 print_warning "Skipped: $CURRENT_TOOL_NAME (user interrupted) - partial results saved"
@@ -125,6 +131,7 @@ run_with_skip() {
                 CURRENT_TOOL_NAME=""
                 return 2  # Return special code for skip
             fi
+            # Any other key pressed - ignore and keep running
         fi
     done
     
@@ -149,7 +156,6 @@ get_iso_timestamp() {
 # Function to escape JSON strings
 escape_json() {
     local str="$1"
-    # Escape backslashes, quotes, newlines, tabs, carriage returns, and form feeds
     echo "$str" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\r/\\r/g; s/\f/\\f/g'
 }
 
@@ -169,7 +175,6 @@ send_discord() {
     local fields="$4"
     local footer="$(escape_json "$5")"
     
-    # Build JSON payload
     local json_payload=$(cat <<EOF
 {
   "embeds": [{
@@ -184,7 +189,6 @@ send_discord() {
 EOF
 )
     
-    # Send to Discord webhook
     curl -s -H "Content-Type: application/json" -X POST -d "$json_payload" "$DISCORD_WEBHOOK" > /dev/null 2>&1
 }
 
@@ -219,7 +223,6 @@ send_discord_complete() {
     local takeover_count="${12:-0}"
     local secret_count="${13:-0}"
     
-    # Calculate duration
     local end_time_epoch=$(date +%s)
     local duration=$((end_time_epoch - START_TIME_EPOCH))
     local duration_min=$((duration / 60))
@@ -240,22 +243,24 @@ send_discord_complete() {
       {"name": "🔴 BIGRAC", "value": "'"$bigrac_count"'", "inline": true},
       {"name": "🔍 Parameters", "value": "'"$param_count"'", "inline": true}'
     
-    # Add takeover field only if it was run
     if [ "$ENABLE_TAKEOVER" = true ]; then
         fields="$fields"',
       {"name": "🚨 Takeovers", "value": "'"$takeover_count"' found", "inline": true}'
     fi
     
-    # Add secrets field only if it was run
     if [ "$ENABLE_SECRETFINDER" = true ]; then
         fields="$fields"',
       {"name": "🔑 Secrets", "value": "'"$secret_count"' found", "inline": true}'
     fi
     
-    # Add dirsearch field only if it was run
     if [ "$ENABLE_DIRSEARCH" = true ] && [ "$dirsearch_count" -gt 0 ]; then
         fields="$fields"',
       {"name": "📁 Dirsearch", "value": "'"$dirsearch_count"' found", "inline": true}'
+    fi
+
+    if [ "$ENABLE_GOWITNESS" = true ]; then
+        fields="$fields"',
+      {"name": "📸 Screenshots", "value": "'"$gowitness_count"' taken", "inline": true}'
     fi
     
     fields="$fields"',
@@ -300,7 +305,6 @@ check_dependencies() {
         fi
     done
     
-    # Check optional tools
     if [ "$ENABLE_DIRSEARCH" = true ]; then
         if command -v dirsearch &> /dev/null; then
             print_success "dirsearch is installed"
@@ -322,7 +326,6 @@ check_dependencies() {
     if [ "$ENABLE_TAKEOVER" = true ]; then
         if command -v nuclei &> /dev/null; then
             print_success "nuclei is installed"
-            # Check if takeover templates exist
             if [ -d "$HOME/nuclei-templates/http/takeovers" ]; then
                 print_success "nuclei takeover templates found"
             else
@@ -379,6 +382,16 @@ check_dependencies() {
             optional_tools+=("hakrawler")
         fi
     fi
+
+    if [ "$ENABLE_GOWITNESS" = true ]; then
+        if command -v gowitness &> /dev/null; then
+            print_success "gowitness is installed"
+        else
+            print_warning "gowitness is NOT installed (required for -gowitness flag)"
+            print_info "Install: go install github.com/sensepost/gowitness/v3@latest"
+            optional_tools+=("gowitness")
+        fi
+    fi
     
     if [ ${#missing_tools[@]} -gt 0 ]; then
         print_warning "Some tools are missing. Script will continue with available tools."
@@ -409,6 +422,7 @@ usage() {
     echo -e "  ${CYAN}-gf${NC}               Enable GF patterns to filter URLs for vulnerabilities"
     echo -e "  ${CYAN}-port${NC}             Enable port scanning with Naabu and Nmap"
     echo -e "  ${CYAN}-grep${NC}             Extract juicy URLs by keywords (configs, backups, secrets, etc.)"
+    echo -e "  ${CYAN}-gowitness${NC}        Screenshot all live hosts with Gowitness"
     echo -e "  ${CYAN}--webhook <url>${NC}   Use custom Discord webhook URL"
     echo -e "  ${CYAN}--no-notify${NC}       Disable Discord notifications"
     echo ""
@@ -424,15 +438,16 @@ usage() {
     echo -e "  ${CYAN}$0 target.com -secret${NC}"
     echo -e "  ${CYAN}$0 target.com -takeover${NC}"
     echo -e "  ${CYAN}$0 target.com -port${NC}"
+    echo -e "  ${CYAN}$0 target.com -gowitness${NC}"
     echo -e "  ${CYAN}$0 target.com -parallel -moreurls -dir -gf${NC}"
     echo -e "  ${CYAN}$0 target.com -dir -gf -secret -takeover -port${NC}"
+    echo -e "  ${CYAN}$0 target.com -parallel -moreurls -gowitness${NC}"
     echo ""
     exit 1
 }
 
 # Main execution
 main() {
-    # Parse command line arguments
     DOMAIN=""
     
     while [[ $# -gt 0 ]]; do
@@ -469,6 +484,10 @@ main() {
                 ENABLE_PORT_SCAN=true
                 shift
                 ;;
+            -gowitness)
+                ENABLE_GOWITNESS=true
+                shift
+                ;;
             --webhook)
                 DISCORD_WEBHOOK="$2"
                 shift 2
@@ -493,35 +512,25 @@ main() {
         esac
     done
     
-    # Clear terminal before starting scan
     clear
-    
     show_banner
     
-    # Check if domain is provided
     if [ -z "$DOMAIN" ]; then
         print_error "No domain provided!"
         usage
     fi
     
     OUTPUT_DIR="$DOMAIN"
-    
-    # Capture start time for duration calculation
     START_TIME=$(date +%s)
     
     print_info "Target Domain: ${BOLD}$DOMAIN${NC}"
     print_info "Start Time: $(get_timestamp)"
     
-    # Send start notification
     send_discord_start "$DOMAIN" "$(get_timestamp)"
-    
-    # Check dependencies
     check_dependencies
     
-    # Create output directory
     print_step "Creating Output Directory"
     if [ -d "$OUTPUT_DIR" ]; then
-        # Normal mode - ask user
         print_warning "Directory $OUTPUT_DIR already exists"
         read -p "Do you want to continue? (y/n): " -n 1 -r
         echo
@@ -531,27 +540,25 @@ main() {
         fi
         print_info "Continuing with existing directory..."
     else
-        # Normal mode - create the directory
         mkdir -p "$OUTPUT_DIR"
         print_success "Created directory: $OUTPUT_DIR"
     fi
     
     cd "$OUTPUT_DIR" || exit 1
-    
-    # Set up cleanup trap
     trap 'exit' INT TERM EXIT
     
-    # Array to track failed tools
     failed_tools=()
+    gowitness_count=0
     
+    # ─────────────────────────────────────────────────────────────
     # Step 1: Subdomain Enumeration
+    # ─────────────────────────────────────────────────────────────
     print_step "Step 1: Subdomain Enumeration"
     print_info "Timestamp: $(get_timestamp)"
     
     if [ "$ENABLE_PARALLEL" = true ]; then
         print_info "Running subdomain enumeration in parallel mode..."
         
-        # Start all tools in background
         if command -v subfinder &> /dev/null; then
             subfinder -d "$DOMAIN" -o subs_subfinder.txt 2>/dev/null &
             pid_subfinder=$!
@@ -562,38 +569,33 @@ main() {
             pid_assetfinder=$!
         fi
         
-        # crt.sh with timeout
         if command -v curl &> /dev/null && command -v jq &> /dev/null; then
             (timeout 30 curl -s "https://crt.sh/?q=%25.$DOMAIN&output=json" 2>/dev/null | jq -r '.[].name_value // empty' 2>/dev/null | sed 's/^\*\.//' | grep -v '@' | sort -u > subs_crtsh.txt) &
             pid_crtsh=$!
         fi
         
-        # shrewdeye with timeout
         if command -v curl &> /dev/null; then
             (timeout 30 curl -s "https://shrewdeye.app/domains/$DOMAIN.txt" > subs_shrewdeye.txt 2>/dev/null) &
             pid_shrewdeye=$!
         fi
         
-        # HackerTarget with timeout
         if command -v curl &> /dev/null; then
             (timeout 30 curl -s "https://api.hackertarget.com/hostsearch/?q=$DOMAIN" 2>/dev/null | cut -d',' -f1 | grep -v "error" > subs_hackertarget.txt) &
             pid_hackertarget=$!
         fi
         
-        # RapidDNS with timeout
         if command -v curl &> /dev/null; then
             (timeout 30 curl -s "https://rapiddns.io/subdomain/$DOMAIN?full=1" 2>/dev/null | grep -oP '[\w.-]+\.'$DOMAIN'' | sort -u > subs_rapiddns.txt) &
             pid_rapiddns=$!
         fi
         
-        # Anubis-DB with timeout
         if command -v curl &> /dev/null && command -v jq &> /dev/null; then
             (timeout 30 curl -s "https://anubisdb.com/anubis/subdomains/$DOMAIN" 2>/dev/null | jq -r '.[]' 2>/dev/null | sort -u > subs_anubis.txt) &
             pid_anubis=$!
         fi
         
-        # Wait for all to complete
         print_info "Waiting for all subdomain tools to complete..."
+        
         if [ -n "${pid_subfinder:-}" ]; then
             if wait $pid_subfinder 2>/dev/null; then
                 print_success "Subfinder completed"
@@ -692,8 +694,7 @@ main() {
         
         print_success "Parallel subdomain enumeration completed!"
     else
-        # Sequential mode (existing code)
-        # Subfinder
+        # Sequential mode
         if command -v subfinder &> /dev/null; then
             print_info "Running Subfinder..."
             if subfinder -d "$DOMAIN" -o subs_subfinder.txt 2>/dev/null; then
@@ -707,7 +708,6 @@ main() {
             print_warning "Subfinder not installed, skipping..."
         fi
         
-        # Assetfinder
         if command -v assetfinder &> /dev/null; then
             print_info "Running Assetfinder..."
             if assetfinder --subs-only "$DOMAIN" > subs_assetfinder.txt 2>/dev/null; then
@@ -721,12 +721,9 @@ main() {
             print_warning "Assetfinder not installed, skipping..."
         fi
         
-        # crt.sh
         if command -v curl &> /dev/null && command -v jq &> /dev/null; then
             print_info "Running crt.sh..."
             crt_response=$(timeout 30 curl -s "https://crt.sh/?q=%25.$DOMAIN&output=json" 2>/dev/null)
-            
-            # Check if response is valid JSON before parsing
             if echo "$crt_response" | jq -e . >/dev/null 2>&1; then
                 echo "$crt_response" | jq -r '.[].name_value // empty' | sed 's/^\*\.//' | grep -v '@' | sort -u > subs_crtsh.txt
                 if [ ! -s subs_crtsh.txt ]; then
@@ -736,9 +733,6 @@ main() {
                 fi
             else
                 print_warning "crt.sh returned invalid response, trying alternative..."
-                # Alternative: Parse HTML response
-                # Escape domain for safe use in regex - escape all special regex characters
-                # Using ] at start of character class so it doesn't need escaping
                 local domain_escaped=$(printf '%s\n' "$DOMAIN" | sed 's/[][\\.*^$()+?{|}]/\\&/g')
                 if timeout 30 curl -s "https://crt.sh/?q=%25.$DOMAIN" 2>/dev/null | grep -oE "[a-zA-Z0-9._-]+\\.$domain_escaped" | grep -v '@' | sort -u > subs_crtsh.txt; then
                     if [ ! -s subs_crtsh.txt ]; then
@@ -756,7 +750,6 @@ main() {
             print_warning "curl or jq not installed, skipping crt.sh..."
         fi
         
-        # Shrewdeye
         if command -v curl &> /dev/null; then
             print_info "Running Shrewdeye..."
             if timeout 30 curl -s "https://shrewdeye.app/domains/$DOMAIN.txt" > subs_shrewdeye.txt 2>/dev/null; then
@@ -774,7 +767,6 @@ main() {
             print_warning "curl not installed, skipping Shrewdeye..."
         fi
         
-        # HackerTarget
         if command -v curl &> /dev/null; then
             print_info "Running HackerTarget..."
             curl -s "https://api.hackertarget.com/hostsearch/?q=$DOMAIN" 2>/dev/null | cut -d',' -f1 | grep -v "error" > subs_hackertarget.txt
@@ -787,7 +779,6 @@ main() {
             print_warning "curl not installed, skipping HackerTarget..."
         fi
         
-        # RapidDNS
         if command -v curl &> /dev/null; then
             print_info "Running RapidDNS..."
             curl -s "https://rapiddns.io/subdomain/$DOMAIN?full=1" 2>/dev/null | grep -oP '[\w.-]+\.'$DOMAIN'' | sort -u > subs_rapiddns.txt
@@ -800,7 +791,6 @@ main() {
             print_warning "curl not installed, skipping RapidDNS..."
         fi
         
-        # Anubis-DB
         if command -v curl &> /dev/null && command -v jq &> /dev/null; then
             print_info "Running Anubis-DB..."
             curl -s "https://anubisdb.com/anubis/subdomains/$DOMAIN" 2>/dev/null | jq -r '.[]' 2>/dev/null | sort -u > subs_anubis.txt
@@ -814,7 +804,9 @@ main() {
         fi
     fi
     
-    # Step 2: Aggregate and Deduplicate
+    # ─────────────────────────────────────────────────────────────
+    # Step 2: DNS Resolution
+    # ─────────────────────────────────────────────────────────────
     print_step "Step 2: DNS Resolution"
     print_info "Timestamp: $(get_timestamp)"
     
@@ -822,14 +814,15 @@ main() {
         cat subs_*.txt 2>/dev/null | sort -u > all_subs.txt
         total_subs=$(wc -l < all_subs.txt)
         print_success "Total unique subdomains found: $total_subs"
-        
-        cp all_subs.txt subdomains.txt
+
     else
         print_error "No subdomain files found"
         total_subs=0
     fi
     
-    # Step 3: Check for Live Web Servers
+    # ─────────────────────────────────────────────────────────────
+    # Step 3: Live Host Check
+    # ─────────────────────────────────────────────────────────────
     print_step "Step 3: Live Host Check"
     print_info "Timestamp: $(get_timestamp)"
     
@@ -848,8 +841,54 @@ main() {
         print_warning "httpx not installed or no subdomains, skipping..."
         live_hosts=0
     fi
-    
+
+    # ─────────────────────────────────────────────────────────────
+    # Gowitness - Screenshot Live Hosts (Optional)
+    # ─────────────────────────────────────────────────────────────
+    if [ "$ENABLE_GOWITNESS" = true ]; then
+        print_step "Gowitness - Screenshot Live Hosts (-gowitness)"
+        print_info "Timestamp: $(get_timestamp)"
+
+        if [ -s live_hosts.txt ] && command -v gowitness &> /dev/null; then
+            mkdir -p gowitness_output
+
+            print_info "Running Gowitness on live hosts..."
+            print_skip_hint
+
+            run_with_skip "gowitness" "gowitness scan file -f live_hosts.txt --screenshot-path gowitness_output --write-db --write-db-uri sqlite://gowitness_output/gowitness.sqlite3 2>/dev/null"
+            local exit_code=$?
+
+            if [ $exit_code -eq 0 ] || [ $exit_code -eq 2 ]; then
+                gowitness_count=$(ls gowitness_output/*.jpeg gowitness_output/*.png 2>/dev/null | wc -l)
+                if [ $exit_code -eq 0 ]; then
+                    print_success "Gowitness completed - $gowitness_count screenshots saved to gowitness_output/"
+                else
+                    print_info "Gowitness skipped (user interrupted) - $gowitness_count screenshots saved"
+                fi
+
+                if [ "$gowitness_count" -gt 0 ]; then
+                    print_info "Generating Gowitness HTML report..."
+                    gowitness report generate --db-uri sqlite://gowitness_output/gowitness.sqlite3 --screenshot-path gowitness_output --zip-name gowitness_output/report.zip 2>/dev/null && \
+                        print_success "Report saved to gowitness_output/report.zip (extract and open report.html)" || \
+                        print_warning "Report generation failed (screenshots still saved)"
+                fi
+            else
+                print_error "Gowitness failed"
+                failed_tools+=("gowitness")
+                send_discord_error "$DOMAIN" "gowitness" "Command execution failed"
+            fi
+        else
+            if [ ! -s live_hosts.txt ]; then
+                print_warning "No live hosts to screenshot"
+            else
+                print_warning "gowitness not installed, skipping... Install: go install github.com/sensepost/gowitness/v3@latest"
+            fi
+        fi
+    fi
+
+    # ─────────────────────────────────────────────────────────────
     # Port Scanning (Optional)
+    # ─────────────────────────────────────────────────────────────
     port_count=0
     if [ "$ENABLE_PORT_SCAN" = true ]; then
         print_step "Port Scanning (-port)"
@@ -857,14 +896,12 @@ main() {
         
         if [ -s live_hosts.txt ] && command -v dnsx &> /dev/null && command -v naabu &> /dev/null; then
             print_info "Extracting domains and resolving to IPs..."
-            # Step 1: Extract domains & resolve to IPs
             sed 's|https\?://||' live_hosts.txt | cut -d'/' -f1 | sort -u > domains_for_port.txt
             if dnsx -a -resp-only -silent < domains_for_port.txt | sort -u > ips.txt 2>/dev/null; then
                 ip_count=$(wc -l < ips.txt 2>/dev/null || echo 0)
                 print_success "Resolved $ip_count unique IPs"
                 
                 if [ "$ip_count" -gt 0 ]; then
-                    # Step 2: Fast scan with Naabu (find open ports)
                     print_info "Running Naabu for fast port discovery..."
                     print_skip_hint
                     run_with_skip "naabu" "naabu -l ips.txt -o open_ports.txt 2>/dev/null"
@@ -878,11 +915,9 @@ main() {
                                 print_info "Naabu - Found $port_count open ports (partial)"
                             fi
                             
-                            # Step 3: Detailed scan with Nmap (get service names)
                             if command -v nmap &> /dev/null; then
                                 print_info "Running Nmap for detailed service detection..."
                                 print_skip_hint
-                                # Extract unique ports and format for nmap (validate numeric and range)
                                 port_list=$(cut -d':' -f2 open_ports.txt | grep -E '^[0-9]+$' | awk '$1 >= 1 && $1 <= 65535' | sort -u | tr '\n' ',' | sed 's/,$//')
                                 if [ -n "$port_list" ]; then
                                     run_with_skip "nmap" "nmap -iL ips.txt -p \"$port_list\" -sV -oN ports_detailed.txt 2>/dev/null"
@@ -890,7 +925,6 @@ main() {
                                     if [ $nmap_exit -eq 0 ]; then
                                         print_success "Nmap completed - Detailed results saved to ports_detailed.txt"
                                     elif [ $nmap_exit -eq 2 ]; then
-                                        # Skipped - message already printed
                                         :
                                     else
                                         print_warning "Nmap scan failed"
@@ -928,7 +962,9 @@ main() {
         fi
     fi
     
-    # Step 10: Subdomain Takeover Check (Optional)
+    # ─────────────────────────────────────────────────────────────
+    # Subdomain Takeover Check (Optional)
+    # ─────────────────────────────────────────────────────────────
     takeover_count=0
     if [ "$ENABLE_TAKEOVER" = true ]; then
         print_step "Subdomain Takeover Check (-takeover)"
@@ -938,7 +974,6 @@ main() {
             print_info "Running Nuclei takeover templates..."
             print_skip_hint
             
-            # Check if templates exist
             if [ -d "$HOME/nuclei-templates/http/takeovers" ]; then
                 run_with_skip "nuclei-takeover" "nuclei -l live_hosts.txt -t ~/nuclei-templates/http/takeovers -o takeover_results.txt 2>/dev/null"
                 local exit_code=$?
@@ -952,14 +987,12 @@ main() {
                             else
                                 print_info "Nuclei takeover scan - Found $takeover_count potential takeovers (partial)!"
                             fi
-                            # Show findings
                             echo ""
                             echo -e "    ${RED}⚠️  TAKEOVER VULNERABILITIES FOUND:${NC}"
                             while read line; do
                                 echo -e "    ${YELLOW}►${NC} $line"
                             done < takeover_results.txt
                             echo ""
-                            # Send Discord alert for takeovers found
                             send_discord "🚨 Subdomain Takeover Found!" "Found $takeover_count vulnerable subdomains on $DOMAIN" 16711680 '[{"name": "Target", "value": "'"$DOMAIN"'", "inline": true}, {"name": "Vulnerabilities", "value": "'"$takeover_count"'", "inline": true}]' "0xMarvul RECON FLOW - CRITICAL"
                         else
                             if [ $exit_code -eq 0 ]; then
@@ -992,7 +1025,9 @@ main() {
         fi
     fi
     
-    # Technology Detection (unnumbered - runs between steps)
+    # ─────────────────────────────────────────────────────────────
+    # Technology Detection
+    # ─────────────────────────────────────────────────────────────
     technologies="N/A"
     if [ -s live_hosts.txt ] && command -v httpx &> /dev/null; then
         print_info "Running Tech Detection..."
@@ -1020,12 +1055,13 @@ main() {
         fi
     fi
     
+    # ─────────────────────────────────────────────────────────────
     # Step 4: URL Gathering
+    # ─────────────────────────────────────────────────────────────
     print_step "Step 4: URL Gathering"
     print_info "Timestamp: $(get_timestamp)"
     
     if [ -s live_hosts.txt ]; then
-        # Gospider
         if command -v gospider &> /dev/null; then
             print_info "Running Gospider..."
             print_skip_hint
@@ -1035,7 +1071,6 @@ main() {
                 print_success "Gospider completed"
                 print_info "Gospider output saved in gospider_output/ directory"
             elif [ $exit_code -eq 2 ]; then
-                # Skipped - message already printed by run_with_skip
                 :
             else
                 print_error "Gospider failed"
@@ -1046,7 +1081,6 @@ main() {
             print_warning "Gospider not installed, skipping..."
         fi
         
-        # Waybackurls
         if command -v waybackurls &> /dev/null; then
             print_info "Running Waybackurls..."
             print_skip_hint
@@ -1055,7 +1089,6 @@ main() {
             if [ $exit_code -eq 0 ]; then
                 print_success "Waybackurls completed"
             elif [ $exit_code -eq 2 ]; then
-                # Skipped - message already printed by run_with_skip
                 :
             else
                 print_error "Waybackurls failed"
@@ -1066,7 +1099,6 @@ main() {
             print_warning "Waybackurls not installed, skipping..."
         fi
         
-        # Katana
         if command -v katana &> /dev/null; then
             print_info "Running Katana..."
             print_skip_hint
@@ -1075,7 +1107,6 @@ main() {
             if [ $exit_code -eq 0 ]; then
                 print_success "Katana completed"
             elif [ $exit_code -eq 2 ]; then
-                # Skipped - message already printed by run_with_skip
                 :
             else
                 print_error "Katana failed"
@@ -1086,7 +1117,6 @@ main() {
             print_warning "Katana not installed, skipping..."
         fi
         
-        # GAU (Optional with -moreurls flag)
         if [ "$ENABLE_MOREURLS" = true ]; then
             if command -v gau &> /dev/null; then
                 print_info "Running GAU..."
@@ -1097,7 +1127,6 @@ main() {
                     gau_count=$(wc -l < gau.txt 2>/dev/null || echo 0)
                     print_success "GAU completed - URLs found: $gau_count"
                 elif [ $exit_code -eq 2 ]; then
-                    # Skipped - message already printed
                     :
                 else
                     print_error "GAU failed"
@@ -1108,7 +1137,6 @@ main() {
                 print_warning "GAU not installed, skipping..."
             fi
             
-            # Hakrawler (Optional with -moreurls flag)
             if [ -s live_hosts.txt ] && command -v hakrawler &> /dev/null; then
                 print_info "Running Hakrawler..."
                 print_skip_hint
@@ -1118,7 +1146,6 @@ main() {
                     hakrawler_count=$(wc -l < hakrawler.txt 2>/dev/null || echo 0)
                     print_success "Hakrawler completed - URLs found: $hakrawler_count"
                 elif [ $exit_code -eq 2 ]; then
-                    # Skipped - message already printed
                     :
                 else
                     print_error "Hakrawler failed"
@@ -1137,7 +1164,7 @@ main() {
         print_warning "No live hosts found, skipping URL gathering..."
     fi
     
-    # Step 4 continued: Merge URLs
+    # Merge URLs
     if [ "$ENABLE_MOREURLS" = true ]; then
         if [ -f wayback.txt ] || [ -f katana.txt ] || [ -f gau.txt ] || [ -f hakrawler.txt ]; then
             cat wayback.txt katana.txt gau.txt hakrawler.txt 2>/dev/null | sort -u > allurls.txt
@@ -1160,7 +1187,9 @@ main() {
         fi
     fi
     
+    # ─────────────────────────────────────────────────────────────
     # Step 6: Parameter Discovery
+    # ─────────────────────────────────────────────────────────────
     print_step "Step 6: Parameter Discovery"
     print_info "Timestamp: $(get_timestamp)"
     
@@ -1171,8 +1200,6 @@ main() {
         run_with_skip "paramspider" "paramspider -d \"$DOMAIN\" 2>/dev/null"
         local exit_code=$?
         if [ $exit_code -eq 0 ] || [ $exit_code -eq 2 ]; then
-            # ParamSpider saves output to results directory by default
-            # Find and move the output file to params.txt
             if [ -f "results/${DOMAIN}.txt" ]; then
                 cp "results/${DOMAIN}.txt" params.txt 2>/dev/null
             elif [ -f "output/${DOMAIN}.txt" ]; then
@@ -1183,7 +1210,6 @@ main() {
                 if [ $exit_code -eq 0 ]; then
                     print_success "ParamSpider completed - Parameters found: $param_count"
                 else
-                    # Was skipped, partial results
                     print_info "ParamSpider - Parameters found (partial): $param_count"
                 fi
             else
@@ -1200,30 +1226,28 @@ main() {
         print_warning "ParamSpider not installed, skipping parameter discovery..."
     fi
     
-    # Step 5: Filter Specific File Types (JavaScript Extraction)
+    # ─────────────────────────────────────────────────────────────
+    # Step 5: JavaScript & File Extraction
+    # ─────────────────────────────────────────────────────────────
     print_step "Step 5: JavaScript Extraction"
     print_info "Timestamp: $(get_timestamp)"
     
     if [ -s allurls.txt ]; then
-        # JavaScript files
         print_info "Filtering JavaScript files..."
         grep -E "\.js" allurls.txt > javascript.txt 2>/dev/null
         js_count=$(wc -l < javascript.txt 2>/dev/null || echo 0)
         print_success "JavaScript files found: $js_count"
         
-        # PHP files
         print_info "Filtering PHP files..."
         grep -E "\.php" allurls.txt > php.txt 2>/dev/null
         php_count=$(wc -l < php.txt 2>/dev/null || echo 0)
         print_success "PHP files found: $php_count"
         
-        # JSON files
         print_info "Filtering JSON files..."
         grep -Ei '\.json($|\?|&)' allurls.txt > json.txt 2>/dev/null
         json_count=$(wc -l < json.txt 2>/dev/null || echo 0)
         print_success "JSON files found: $json_count"
         
-        # BIGRAC - Sensitive files
         print_info "Filtering BIGRAC (sensitive files)..."
         grep -Ei '/(swagger|openapi|api-docs|v2\/api-docs|swagger-resources)(\.json|/|$|\?)|\b(json|config|metadata|schema|manifest|openapi|swagger)(\.json|\.yaml|\.yml)?(\?|$|/)|\.(yaml|yml)($|\?|&)|(/|^)(package|config|composer|manifest)\.json($|\?|&)|/(\.env|env|config\.php|db\.sql|dump\.sql|backup|\.htpasswd|credentials|robots\.txt)$' allurls.txt | sort -u > BIGRAC.txt 2>/dev/null
         bigrac_count=$(wc -l < BIGRAC.txt 2>/dev/null || echo 0)
@@ -1232,16 +1256,16 @@ main() {
         print_warning "No URLs to filter"
     fi
     
+    # ─────────────────────────────────────────────────────────────
     # Grep Juicy URLs (Optional)
+    # ─────────────────────────────────────────────────────────────
     if [ "$ENABLE_GREP" = true ]; then
         print_step "Grep Juicy URLs (-grep)"
         print_info "Timestamp: $(get_timestamp)"
         
         if [ -s allurls.txt ]; then
-            # Create grep results directory
             mkdir -p grep_results
             
-            # Also combine Gospider output if exists
             if [ -d gospider_output ] && [ -n "$(find gospider_output -maxdepth 1 -type f -print -quit 2>/dev/null)" ]; then
                 print_info "Combining Gospider output..."
                 find gospider_output -type f -exec cat {} + 2>/dev/null | grep -oE "https?://[^ \"']+" | sort -u > gospider_urls.txt
@@ -1253,85 +1277,67 @@ main() {
             
             print_info "Grepping for juicy URLs..."
             
-            # Config files
             print_info "  → Config files..."
             grep -iE "(\.config|\.conf|\.cfg|\.ini|\.env|\.properties|\.yaml|\.yml|\.toml|\.xml|settings|configuration)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/config.txt
             config_count=$(wc -l < grep_results/config.txt 2>/dev/null || echo 0)
             
-            # Backup files
             print_info "  → Backup files..."
             grep -iE "\.(bak|backup|old|orig|original|copy|tmp|temp|swp|swo|save|~|zip|tar|gz|rar|7z)(\?|$|&)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/backup.txt
             backup_count=$(wc -l < grep_results/backup.txt 2>/dev/null || echo 0)
             
-            # Database files
             print_info "  → Database files..."
             grep -iE "(\.sql|\.sqlite|\.sqlite3|\.db|\.mdb|\.dump|mysql|postgres|mongodb|database|phpmyadmin)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/database.txt
             database_count=$(wc -l < grep_results/database.txt 2>/dev/null || echo 0)
             
-            # Secrets & Credentials
             print_info "  → Secrets & credentials..."
             grep -iE "(password|passwd|pwd|secret|token|api_key|apikey|api-key|auth_token|access_token|private_key|credential|htpasswd|htaccess)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/secrets.txt
             secrets_count=$(wc -l < grep_results/secrets.txt 2>/dev/null || echo 0)
             
-            # Source code exposure
             print_info "  → Source code exposure..."
             grep -iE "(\.git|\.svn|\.hg|\.bzr|\.gitignore|\.gitconfig|\.gitattributes)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/sourcecode.txt
             sourcecode_count=$(wc -l < grep_results/sourcecode.txt 2>/dev/null || echo 0)
             
-            # API & Documentation
             print_info "  → API & documentation..."
             grep -iE "(swagger|openapi|api-docs|graphql|graphiql|/api/|/v1/|/v2/|/v3/|rest/|wsdl|raml)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/api.txt
             api_count=$(wc -l < grep_results/api.txt 2>/dev/null || echo 0)
             
-            # Admin panels
             print_info "  → Admin panels..."
             grep -iE "(admin|administrator|dashboard|cpanel|webadmin|manager|console|portal|backend|wp-admin|wp-login|wp-content|phpmyadmin|adminer)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/admin.txt
             admin_count=$(wc -l < grep_results/admin.txt 2>/dev/null || echo 0)
             
-            # Debug & Development
             print_info "  → Debug & development..."
             grep -iE "(debug|trace|test|phpinfo|server-status|server-info|\.dev\.|\.staging\.|\.uat\.|\.local\.|\.test\.)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/debug.txt
             debug_count=$(wc -l < grep_results/debug.txt 2>/dev/null || echo 0)
             
-            # Log files
             print_info "  → Log files..."
             grep -iE "(\.log|/logs/|/log/|error\.log|access\.log|debug\.log|audit\.log)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/logs.txt
             logs_count=$(wc -l < grep_results/logs.txt 2>/dev/null || echo 0)
             
-            # Upload directories
             print_info "  → Upload directories..."
             grep -iE "(upload|uploads|file|files|attachment|attachments|media|assets|/tmp/|/temp/|/cache/)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/uploads.txt
             uploads_count=$(wc -l < grep_results/uploads.txt 2>/dev/null || echo 0)
             
-            # Keys & Certificates
             print_info "  → Keys & certificates..."
             grep -iE "\.(pem|key|crt|cer|p12|pfx|jks|keystore|pub|ppk)(\?|$|&)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/keys.txt
             keys_count=$(wc -l < grep_results/keys.txt 2>/dev/null || echo 0)
             
-            # Sensitive data files
             print_info "  → Sensitive data files..."
             grep -iE "(\.csv|\.xls|\.xlsx|\.doc|\.docx|\.pdf|data\.json|users\.json|export|dump)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/datafiles.txt
             datafiles_count=$(wc -l < grep_results/datafiles.txt 2>/dev/null || echo 0)
             
-            # Internal/Private
             print_info "  → Internal & private..."
             grep -iE "(internal|private|hidden|secret|confidential|restricted|/priv/|/private/)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/internal.txt
             internal_count=$(wc -l < grep_results/internal.txt 2>/dev/null || echo 0)
             
-            # Cloud & AWS
             print_info "  → Cloud & AWS..."
             grep -iE "(aws|s3\.|amazonaws|azure|blob\.core|gcp|googleusercontent|firebase|digitalocean|bucket)" "$INPUT_FILE" 2>/dev/null | sort -u > grep_results/cloud.txt
             cloud_count=$(wc -l < grep_results/cloud.txt 2>/dev/null || echo 0)
             
-            # Combine all unique findings
             print_info "Combining all results..."
             find grep_results/ -type f -name '*.txt' ! -name 'ALL_JUICY.txt' -exec cat {} + 2>/dev/null | sort -u > grep_results/ALL_JUICY.txt
             total_juicy=$(wc -l < grep_results/ALL_JUICY.txt 2>/dev/null || echo 0)
-            
-            # Remove empty files (but check total_juicy first to avoid deleting ALL_JUICY.txt prematurely)
             find grep_results/ -name '*.txt' ! -name 'ALL_JUICY.txt' -type f -empty -delete 2>/dev/null
             
-            # Print summary
             print_success "Grep Juicy URLs completed!"
             echo ""
             echo -e "    ${GREEN}►${NC} Config files:      ${BOLD}$config_count${NC}"
@@ -1353,24 +1359,22 @@ main() {
             echo -e "    ${BOLD}TOTAL JUICY URLs: $total_juicy${NC}"
             echo -e "    ${CYAN}═══════════════════════════════════${NC}"
             echo -e "    ${GREEN}►${NC} Results saved in: ${BOLD}grep_results/${NC}"
-            
         else
             print_warning "No URLs to grep (allurls.txt is empty)"
         fi
     fi
     
+    # ─────────────────────────────────────────────────────────────
     # Step 9: GF Patterns (Optional)
+    # ─────────────────────────────────────────────────────────────
     if [ "$ENABLE_GF" = true ]; then
         print_step "Step 9: GF Patterns (-gf)"
         print_info "Timestamp: $(get_timestamp)"
         
         if [ -s allurls.txt ] && command -v gf &> /dev/null; then
             print_info "Running GF patterns on URLs..."
-            
-            # Create gf output directory
             mkdir -p gf
             
-            # Run all patterns
             gf xss < allurls.txt > gf/xss.txt 2>/dev/null
             gf sqli < allurls.txt > gf/sqli.txt 2>/dev/null
             gf ssrf < allurls.txt > gf/ssrf.txt 2>/dev/null
@@ -1380,7 +1384,6 @@ main() {
             gf idor < allurls.txt > gf/idor.txt 2>/dev/null
             gf ssti < allurls.txt > gf/ssti.txt 2>/dev/null
             
-            # Count results
             xss_count=$(wc -l < gf/xss.txt 2>/dev/null || echo 0)
             sqli_count=$(wc -l < gf/sqli.txt 2>/dev/null || echo 0)
             ssrf_count=$(wc -l < gf/ssrf.txt 2>/dev/null || echo 0)
@@ -1400,9 +1403,7 @@ main() {
             echo -e "    ${GREEN}►${NC} IDOR: $idor_count"
             echo -e "    ${GREEN}►${NC} SSTI: $ssti_count"
             
-            # Remove empty files
             find gf/ -type f -empty -delete 2>/dev/null
-            
         else
             if [ ! -s allurls.txt ]; then
                 print_warning "No URLs to filter with GF patterns"
@@ -1412,7 +1413,9 @@ main() {
         fi
     fi
     
+    # ─────────────────────────────────────────────────────────────
     # Step 7: Directory Bruteforce (Optional)
+    # ─────────────────────────────────────────────────────────────
     dirsearch_count=0
     if [ "$ENABLE_DIRSEARCH" = true ]; then
         print_step "Step 7: Directory Bruteforce (-dir)"
@@ -1437,7 +1440,6 @@ main() {
                     print_info "Dirsearch findings (200 status): $dirsearch_count"
                 fi
             elif [ $exit_code -eq 2 ]; then
-                # Skipped - message already printed by run_with_skip
                 :
             else
                 print_error "Dirsearch failed"
@@ -1453,7 +1455,9 @@ main() {
         fi
     fi
     
+    # ─────────────────────────────────────────────────────────────
     # Step 8: Secret Finding (Optional)
+    # ─────────────────────────────────────────────────────────────
     secret_count=0
     if [ "$ENABLE_SECRETFINDER" = true ]; then
         print_step "Step 8: SecretFinder (-secret)"
@@ -1463,7 +1467,6 @@ main() {
             print_info "Running SecretFinder on JavaScript files..."
             print_skip_hint
             
-            # Run secretfinder with direct file input (much faster than looping)
             run_with_skip "secretfinder" "secretfinder -i javascript.txt -o cli > secrets_found.txt 2>/dev/null"
             local exit_code=$?
             
@@ -1494,7 +1497,9 @@ main() {
         fi
     fi
     
+    # ─────────────────────────────────────────────────────────────
     # Final Summary
+    # ─────────────────────────────────────────────────────────────
     print_step "FINAL SUMMARY"
     print_info "End Time: $(get_timestamp)"
     echo ""
@@ -1529,6 +1534,9 @@ main() {
     if [ "$ENABLE_PORT_SCAN" = true ]; then
         echo -e "  ${GREEN}►${NC} Open ports found: ${BOLD}${port_count:-0}${NC}"
     fi
+    if [ "$ENABLE_GOWITNESS" = true ]; then
+        echo -e "  ${GREEN}►${NC} Screenshots taken: ${BOLD}${gowitness_count:-0}${NC}"
+    fi
     if [ "$ENABLE_GF" = true ]; then
         echo -e "  ${GREEN}►${NC} GF Patterns saved to: ${BOLD}gf/${NC} folder"
     fi
@@ -1558,6 +1566,12 @@ main() {
     echo -e "  ${CYAN}►${NC} ${BOLD}php.txt${NC} - PHP file URLs (potential vulnerabilities)"
     echo -e "  ${CYAN}►${NC} ${BOLD}json.txt${NC} - JSON file URLs (API responses, configs)"
     echo -e "  ${CYAN}►${NC} ${BOLD}BIGRAC.txt${NC} - Sensitive files: swagger docs, API docs, configs, .env, SQL dumps, credentials"
+    if [ "$ENABLE_GOWITNESS" = true ]; then
+        echo -e "  ${CYAN}►${NC} ${BOLD}gowitness_output/${NC} - Screenshots of live hosts:"
+        echo -e "      ${CYAN}•${NC} *.png             - Individual screenshots per host"
+        echo -e "      ${CYAN}•${NC} gowitness.sqlite3 - Gowitness database"
+        echo -e "      ${CYAN}•${NC} report.zip        - Extract and open report.html in browser"
+    fi
     if [ "$ENABLE_TAKEOVER" = true ]; then
         echo -e "  ${CYAN}►${NC} ${BOLD}takeover_results.txt${NC} - Subdomain takeover vulnerabilities found by Nuclei"
     fi
@@ -1609,7 +1623,6 @@ main() {
         DURATION_MIN=$((DURATION_SEC / 60))
         DURATION_REMAIN=$((DURATION_SEC % 60))
         
-        # Build the Discord message with each stat on separate lines
         local discord_msg="Finished scanning $DOMAIN
 📍 Subdomains
 $(wc -l < all_subs.txt 2>/dev/null || echo 0)
@@ -1626,7 +1639,6 @@ $(grep -c '\.json' allurls.txt 2>/dev/null || echo 0)
 🔍 Parameters
 $(wc -l < params.txt 2>/dev/null || echo 0)"
 
-        # Add optional sections only if they were enabled
         if [ "$ENABLE_DIRSEARCH" = true ]; then
             local dirsearch_count_local=$(grep -c "200" mar0xwan.txt 2>/dev/null || echo 0)
             if [ "$dirsearch_count_local" -gt 0 ]; then
@@ -1652,6 +1664,12 @@ ${port_count_local}"
 🔑 Secrets
 ${secret_count_local}"
             fi
+        fi
+
+        if [ "$ENABLE_GOWITNESS" = true ] && [ "${gowitness_count:-0}" -gt 0 ]; then
+            discord_msg="${discord_msg}
+📸 Screenshots
+${gowitness_count}"
         fi
         
         discord_msg="${discord_msg}
