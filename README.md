@@ -16,6 +16,7 @@ A comprehensive bash-based reconnaissance automation tool for bug bounty hunting
 - **Parameter Discovery**: Discovers URL parameters using ParamSpider
 - **Directory Bruteforce**: Optional directory and file discovery with Dirsearch (use `-dir` flag)
 - **Secret Finding**: Optional secret discovery in JavaScript files with SecretFinder (use `-secret` flag)
+- **Screenshot Capture**: Optional visual screenshots of all live hosts using Gowitness (use `-gowitness` flag)
 - **Smart Filtering**: Automatically categorizes JavaScript, PHP, JSON, and sensitive files
 - **BIGRAC Detection**: Identifies sensitive files like Swagger docs, API endpoints, config files, credentials, etc.
 - **Discord Notifications**: Real-time notifications via Discord webhooks (enabled by default)
@@ -70,6 +71,7 @@ The graceful skip feature works with these potentially long-running tools:
 - **dirsearch** - Directory brute-forcing
 - **paramspider** - Parameter discovery
 - **secretfinder** - Secret scanning in JavaScript
+- **gowitness** - Live host screenshots
 - **naabu** - Fast port scanner
 - **nmap** - Detailed port scanning
 - **nuclei** - Vulnerability scanner with takeover templates
@@ -119,10 +121,10 @@ This tool requires several external security tools to be installed. Below are th
    ```bash
    # Ubuntu/Debian
    sudo apt-get install jq
-   
+
    # macOS
    brew install jq
-   
+
    # Arch Linux
    sudo pacman -S jq
    ```
@@ -131,7 +133,7 @@ This tool requires several external security tools to be installed. Below are th
    ```bash
    # Ubuntu/Debian
    sudo apt-get install curl
-   
+
    # macOS
    brew install curl
    ```
@@ -154,53 +156,58 @@ This tool requires several external security tools to be installed. Below are th
     sudo chmod +x /usr/local/bin/secretfinder
     ```
 
-12. **Nuclei** - Vulnerability scanner (only needed if using `-takeover` flag)
+12. **Gowitness** - Screenshot live hosts (only needed if using `-gowitness` flag)
+    ```bash
+    go install github.com/sensepost/gowitness/v3@latest
+    ```
+
+13. **Nuclei** - Vulnerability scanner (only needed if using `-takeover` flag)
     ```bash
     go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
     # Update nuclei templates to get takeover templates
     nuclei -update-templates
     ```
 
-13. **GF (GF Patterns)** - Pattern-based grep for filtering URLs (only needed if using `-gf` flag)
+14. **GF (GF Patterns)** - Pattern-based grep for filtering URLs (only needed if using `-gf` flag)
     ```bash
     # Install gf
     go install github.com/tomnomnom/gf@latest
-    
+
     # Install gf patterns
     git clone https://github.com/1ndianl33t/Gf-Patterns.git
     mkdir -p ~/.gf
     cp Gf-Patterns/*.json ~/.gf/
-    
+
     # Or install patterns from tomnomnom's repo
     git clone https://github.com/tomnomnom/gf.git
     cp gf/examples/*.json ~/.gf/
     ```
 
-14. **GAU (GetAllUrls)** - Fetch known URLs from various sources (only needed if using `-moreurls` flag)
+15. **GAU (GetAllUrls)** - Fetch known URLs from various sources (only needed if using `-moreurls` flag)
     ```bash
     go install github.com/lc/gau/v2/cmd/gau@latest
     ```
 
-15. **Hakrawler** - Fast web crawler (only needed if using `-moreurls` flag)
+16. **Hakrawler** - Fast web crawler (only needed if using `-moreurls` flag)
     ```bash
     go install github.com/hakluke/hakrawler@latest
     ```
 
-16. **Naabu** - Fast port scanner (only needed if using `-port` flag)
+17. **Naabu** - Fast port scanner (only needed if using `-port` flag)
     ```bash
     go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
     ```
 
-17. **Nmap** - Network mapper (only needed if using `-port` flag)
+18. **Nmap** - Network mapper (only needed if using `-port` flag)
     ```bash
     # Ubuntu/Debian
     sudo apt-get install nmap
-    
+
     # macOS
     brew install nmap
     ```
 
-18. **dnsx** - DNS toolkit (only needed if using `-port` flag)
+19. **dnsx** - DNS toolkit (only needed if using `-port` flag)
     ```bash
     go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
     ```
@@ -222,6 +229,7 @@ go install github.com/lc/gau/v2/cmd/gau@latest
 go install github.com/hakluke/hakrawler@latest
 go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
 go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+go install github.com/sensepost/gowitness/v3@latest
 
 # Install Python tools
 pip install paramspider dirsearch
@@ -281,6 +289,7 @@ Basic usage:
 | `-gf` | Enable GF patterns to filter URLs for vulnerabilities |
 | `-grep` | Extract juicy URLs by keywords (configs, backups, secrets, admin panels, etc.) |
 | `-port` | Enable port scanning with Naabu and Nmap |
+| `-gowitness` | Screenshot all live hosts with Gowitness |
 | `--webhook <url>` | Use custom Discord webhook URL |
 | `--no-notify` | Disable Discord notifications |
 
@@ -341,9 +350,19 @@ Basic usage:
 ./0xMarvul_RECON_FLOW.sh example.com -gf -grep
 ```
 
+**With Gowitness screenshots:**
+```bash
+./0xMarvul_RECON_FLOW.sh example.com -gowitness
+```
+
+**With parallel mode, extra URLs and screenshots:**
+```bash
+./0xMarvul_RECON_FLOW.sh example.com -parallel -moreurls -gowitness
+```
+
 **With all optional features:**
 ```bash
-./0xMarvul_RECON_FLOW.sh example.com -parallel -moreurls -dir -secret -takeover -gf -port
+./0xMarvul_RECON_FLOW.sh example.com -parallel -moreurls -dir -secret -takeover -gf -port -gowitness
 ```
 
 **Custom webhook without notifications:**
@@ -363,6 +382,7 @@ The script will:
 4. Perform reconnaissance across multiple phases:
    - Subdomain enumeration
    - Live host detection
+   - Screenshot capture (if `-gowitness` flag used)
    - Subdomain takeover check (if `-takeover` flag used)
    - Technology detection
    - URL gathering
@@ -404,6 +424,10 @@ target.com/
 ├── php.txt                     # PHP file URLs
 ├── json.txt                    # JSON file URLs
 ├── BIGRAC.txt                  # Sensitive files (configs, APIs, credentials, etc.)
+├── gowitness_output/           # Screenshots of live hosts (only if -gowitness flag used)
+│   ├── *.png                   # Individual screenshot per host
+│   ├── gowitness.sqlite3       # Gowitness database
+│   └── report.html             # HTML report (open in browser to browse all screenshots)
 ├── gf/                         # GF patterns results (only if -gf flag used)
 │   ├── xss.txt                 # URLs potentially vulnerable to XSS
 │   ├── sqli.txt                # URLs potentially vulnerable to SQL injection
@@ -468,6 +492,7 @@ Sent when the scan finishes successfully, showing:
 - Subdomain takeovers found (if `-takeover` flag used)
 - Secrets found (if `-secret` flag used)
 - Dirsearch results (if `-dir` flag used)
+- Screenshots taken (if `-gowitness` flag used)
 - Technologies detected
 - Total scan duration
 
@@ -504,6 +529,7 @@ Finished scanning **target.com**
 🚨 Takeovers: 2 found (if -takeover flag used)
 🔑 Secrets: 15 found (if -secret flag used)
 📁 Dirsearch: 245 found (if -dir flag used)
+📸 Screenshots: 45 taken (if -gowitness flag used)
 🔧 Technologies: Apache/2.4.41, PHP/7.4, WordPress, jQuery, Nginx
 ⏱️ Duration: 5m 32s
 ```
@@ -589,6 +615,10 @@ The tool uses color-coded output for better readability:
 | `php.txt` | PHP files | Test for vulnerabilities |
 | `json.txt` | JSON files | API responses, configurations |
 | `BIGRAC.txt` | Sensitive files | High-value targets (APIs, configs, credentials) |
+| `gowitness_output/` | Screenshots of live hosts | Visual recon (if -gowitness used) |
+| `gowitness_output/*.png` | Individual host screenshots | Quick visual triage of all live hosts |
+| `gowitness_output/gowitness.sqlite3` | Gowitness database | Used to generate reports |
+| `gowitness_output/report.html` | HTML report | Open in browser to browse all screenshots |
 | `gf/` | GF patterns results | Filtered URLs by vulnerability type (if -gf used) |
 | `gf/xss.txt` | XSS pattern matches | URLs potentially vulnerable to XSS |
 | `gf/sqli.txt` | SQLi pattern matches | URLs potentially vulnerable to SQL injection |
@@ -648,6 +678,7 @@ This tool is perfect for:
 - **Asset Discovery**: Finding all subdomains and URLs for an organization
 - **Attack Surface Mapping**: Identifying all potential entry points
 - **Sensitive File Detection**: Finding exposed configurations and credentials
+- **Visual Recon**: Quickly triaging hundreds of live hosts via screenshots
 
 ## Ethical Usage
 
@@ -677,6 +708,15 @@ This tool is intended for:
 [✓] crt.sh query completed
 
 ═══════════════════════════════════════
+[STEP] Gowitness - Screenshot Live Hosts (-gowitness)
+═══════════════════════════════════════
+
+[*] Running Gowitness on live hosts...
+    (Press ENTER to skip...)
+[✓] Gowitness completed - 45 screenshots saved to gowitness_output/
+[✓] HTML report saved to gowitness_output/report.html
+
+═══════════════════════════════════════
 FINAL SUMMARY
 ═══════════════════════════════════════
 
@@ -688,6 +728,7 @@ Statistics:
   ► PHP files: 30
   ► JSON files: 25
   ► BIGRAC sensitive files: 8
+  ► Screenshots taken: 45
 ```
 
 ## Contributing
@@ -715,6 +756,7 @@ If you find this tool useful, please consider giving it a star on GitHub!
 - [Subfinder Documentation](https://github.com/projectdiscovery/subfinder)
 - [httpx Documentation](https://github.com/projectdiscovery/httpx)
 - [Katana Documentation](https://github.com/projectdiscovery/katana)
+- [Gowitness Documentation](https://github.com/sensepost/gowitness)
 - [OWASP Testing Guide](https://owasp.org/www-project-web-security-testing-guide/)
 
 ## Updates
