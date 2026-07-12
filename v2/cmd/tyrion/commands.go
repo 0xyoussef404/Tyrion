@@ -16,6 +16,7 @@ import (
 	"github.com/0xyoussef404/tyrion/internal/engine"
 	"github.com/0xyoussef404/tyrion/internal/findings"
 	"github.com/0xyoussef404/tyrion/internal/httpx"
+	"github.com/0xyoussef404/tyrion/internal/intel"
 	"github.com/0xyoussef404/tyrion/internal/model"
 	"github.com/0xyoussef404/tyrion/internal/pipeline"
 	"github.com/0xyoussef404/tyrion/internal/reporting"
@@ -172,12 +173,23 @@ func cmdIdentity(args []string) error {
 // a blank line, then an optional body.
 func cmdAuthz(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: tyrion authz <domain> <request-file>")
+		return fmt.Errorf("usage: tyrion authz <domain> <request-file> [-read <read-request-file>]")
 	}
 	domain := strings.ToLower(args[0])
 	req, err := parseRequestFile(args[1])
 	if err != nil {
 		return err
+	}
+	// Optional read request enables the state-change detector.
+	var readReq *authz.Request
+	for i := 2; i < len(args); i++ {
+		if args[i] == "-read" && i+1 < len(args) {
+			r, err := parseRequestFile(args[i+1])
+			if err != nil {
+				return err
+			}
+			readReq = &r
+		}
 	}
 	st, err := store.Open(filepath.Join(".", domain, ".tyrion"))
 	if err != nil {
@@ -207,20 +219,211 @@ func cmdAuthz(args []string) error {
 
 	// Persist a finding + evidence when the comparator flags something.
 	if rep.Verdict != "ok" {
+		severity, status := "high", "candidate"
+		summary := fmt.Sprintf("%s %s reachable by a lower-privilege identity. %s", rep.Method, rep.URL, rep.Reason)
+
+		// State-change verification promotes candidate -> confirmed.
+		if readReq != nil {
+			if off := offendingIdentity(rep, ids); off != nil {
+				sr := authz.VerifyStateChange(client, rep.Request, *readReq, off)
+				fmt.Printf("\nState-change check as %q: %s\n", off.Name, sr.Note)
+				if sr.Changed {
+					severity, status = "critical", "confirmed"
+					summary += " State change CONFIRMED via before/after read diff."
+				}
+			}
+		}
+
 		fm := findings.New(st)
 		f := fm.Add(&model.Finding{
-			Title: "Missing authorization on " + rep.URL, Class: "bfla", Severity: "high",
-			Confidence: rep.Confidence, Score: rep.Confidence, Target: rep.URL, Status: "candidate",
-			Summary: fmt.Sprintf("%s %s reachable by a lower-privilege identity. %s", rep.Method, rep.URL, rep.Reason),
+			Title: "Missing authorization on " + rep.URL, Class: "bfla", Severity: severity,
+			Confidence: rep.Confidence, Score: rep.Confidence, Target: rep.URL, Status: status,
+			Summary: summary,
 		})
 		for _, r := range rep.Results {
 			fm.AddEvidence(&model.Evidence{FindingID: f.ID, Identity: r.Identity, Status: r.Status,
 				Request: rep.Method + " " + rep.URL, Response: r.Snippet})
 		}
 		st.Flush()
-		fmt.Printf("recorded finding %s\n", f.ID)
+		fmt.Printf("recorded finding %s [%s/%s]\n", f.ID, severity, status)
 	}
 	return nil
+}
+
+// offendingIdentity returns the lower-privilege identity that got a successful
+// response (the one that shouldn't have access).
+func offendingIdentity(rep *authz.Report, ids []*model.Identity) *model.Identity {
+	byName := map[string]*model.Identity{}
+	for _, id := range ids {
+		byName[id.Name] = id
+	}
+	maxPriv := 0
+	for _, r := range rep.Results {
+		if r.Status >= 200 && r.Status < 300 && r.Privilege > maxPriv {
+			maxPriv = r.Privilege
+		}
+	}
+	var best *model.Identity
+	for _, r := range rep.Results {
+		if r.Status >= 200 && r.Status < 300 && r.Privilege < maxPriv {
+			if best == nil || r.Privilege < best.Privilege {
+				best = byName[r.Identity]
+			}
+		}
+	}
+	return best
+}
+
+// graph <domain> — correlation clusters (shared favicon / TLS cert).
+func cmdGraph(args []string) error {
+	domain, err := mustDomain(args)
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(filepath.Join(".", domain, ".tyrion"))
+	if err != nil {
+		return err
+	}
+	var svcs []*model.HTTPService
+	for _, r := range st.All(model.KindHTTPService) {
+		svcs = append(svcs, &model.HTTPService{Host: strv(r, "host"),
+			FaviconHash: strv(r, "favicon_hash"), TLSCertHash: strv(r, "tls_cert_hash")})
+	}
+	clusters, edges := intel.Correlate(svcs)
+	fmt.Printf("Asset graph: %d edges, %d correlation clusters\n\n", len(edges), len(clusters))
+	for _, c := range clusters {
+		fmt.Printf("• %s (%d hosts share this signal):\n", c.Signal, len(c.Hosts))
+		for _, h := range c.Hosts {
+			fmt.Printf("    %s\n", h)
+		}
+	}
+	// Also summarize stored edges by relation.
+	byRel := map[string]int{}
+	for _, e := range st.All(model.KindEdge) {
+		byRel[strv(e, "rel")]++
+	}
+	if len(byRel) > 0 {
+		fmt.Println("\nStored edges by relation:")
+		for rel, n := range byRel {
+			fmt.Printf("    %-26s %d\n", rel, n)
+		}
+	}
+	return nil
+}
+
+// authz-batch <domain> -base <url> [-limit n] — the BOLA/BFLA workspace: turn
+// every IDOR-candidate / sensitive endpoint into a concrete request and replay
+// it across all identities.
+func cmdAuthzBatch(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: tyrion authz-batch <domain> -base <url> [-limit n]")
+	}
+	domain := strings.ToLower(args[0])
+	base, limit := "", 40
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "-base":
+			if i+1 < len(args) {
+				i++
+				base = strings.TrimRight(args[i], "/")
+			}
+		case "-limit":
+			if i+1 < len(args) {
+				i++
+				fmt.Sscanf(args[i], "%d", &limit)
+			}
+		}
+	}
+	st, err := store.Open(filepath.Join(".", domain, ".tyrion"))
+	if err != nil {
+		return err
+	}
+	var ids []*model.Identity
+	for _, r := range st.All(model.KindIdentity) {
+		ids = append(ids, identityFromMap(r))
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("no identities defined; add them with `tyrion identity %s add ...`", domain)
+	}
+
+	// Candidate endpoints: IDOR candidates first, then other sensitive ones.
+	targets := st.All(model.KindEndpoint)
+	sort.Slice(targets, func(i, j int) bool { return numField(targets[i], "score") > numField(targets[j], "score") })
+
+	client := httpx.New(5, 15*time.Second)
+	fm := findings.New(st)
+	tested, flagged := 0, 0
+	for _, e := range targets {
+		if tested >= limit {
+			break
+		}
+		if !boolField(e, "idor_candidate") && !boolField(e, "sensitive") {
+			continue
+		}
+		url := concreteURL(strv(e, "template"), base)
+		if url == "" {
+			continue
+		}
+		tested++
+		rep, err := authz.Compare(client, authz.Request{Method: "GET", URL: url}, ids)
+		if err != nil {
+			continue
+		}
+		if rep.Verdict == "ok" {
+			continue
+		}
+		flagged++
+		f := fm.Add(&model.Finding{
+			Title: "Broken object/function level authorization on " + url, Class: "bola",
+			Severity: "high", Confidence: rep.Confidence, Score: rep.Confidence, Target: url,
+			Status: "candidate", Summary: fmt.Sprintf("GET %s reachable by lower-privilege identity. %s", url, rep.Reason),
+		})
+		for _, r := range rep.Results {
+			fm.AddEvidence(&model.Evidence{FindingID: f.ID, Identity: r.Identity, Status: r.Status,
+				Request: "GET " + url, Response: r.Snippet})
+		}
+		fmt.Printf("[flag] %-6s %s (conf %d%%)\n", "GET", url, rep.Confidence)
+	}
+	st.Flush()
+	fmt.Printf("\nbatch authz: tested %d endpoints, flagged %d (findings recorded)\n", tested, flagged)
+	return nil
+}
+
+// concreteURL turns a normalized template into a fetchable URL by filling in
+// placeholder variable types with safe probe values.
+func concreteURL(template, base string) string {
+	repl := strings.NewReplacer(
+		"{integer}", "1",
+		"{uuid}", "00000000-0000-0000-0000-000000000001",
+		"{mongoid}", "000000000000000000000001",
+		"{hash}", "0000000000000000000000000000000000000000",
+		"{slug}", "test",
+		"{date}", "2024-01-01",
+		"{email}", "test@example.com",
+		"{base64}", "dGVzdA==",
+		"{jwt}", "x",
+	)
+	u := repl.Replace(template)
+	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return u
+	}
+	// When a base is given, it owns scheme+host; take only the path from the
+	// template (templates are stored as host/path).
+	if base != "" {
+		path := u
+		if !strings.HasPrefix(u, "/") {
+			if idx := strings.Index(u, "/"); idx >= 0 {
+				path = u[idx:]
+			} else {
+				path = "/"
+			}
+		}
+		return base + path
+	}
+	if strings.Contains(u, "/") && !strings.HasPrefix(u, "/") {
+		return "https://" + u
+	}
+	return ""
 }
 
 // report <domain>
@@ -365,6 +568,7 @@ func numField(r map[string]any, k string) int {
 	}
 	return 0
 }
+func boolField(r map[string]any, k string) bool { b, _ := r[k].(bool); return b }
 func boolMark(r map[string]any, k string) string {
 	if b, _ := r[k].(bool); b {
 		return "IDOR?"

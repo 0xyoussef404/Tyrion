@@ -1,0 +1,6 @@
+name: cdncheck
+category: infrastructure
+binary: cdncheck
+args: ["-i", "{{infile}}", "-silent"]
+parser: lines
+timeout: 5m

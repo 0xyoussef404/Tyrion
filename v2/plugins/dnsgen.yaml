@@ -1,0 +1,7 @@
+name: dnsgen
+category: subdomain-enumeration
+binary: dnsgen
+args: []
+stdin_file: "{{infile}}"
+parser: host-lines
+timeout: 10m

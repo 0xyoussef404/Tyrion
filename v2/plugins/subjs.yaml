@@ -1,0 +1,7 @@
+name: subjs
+category: js
+binary: subjs
+args: []
+stdin_file: "{{infile}}"
+parser: lines
+timeout: 10m

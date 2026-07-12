@@ -1,0 +1,6 @@
+name: ffuf
+category: content-discovery
+binary: ffuf
+args: ["-u", "{{target}}/FUZZ", "-w", "/usr/share/seclists/Discovery/Web-Content/common.txt", "-mc", "200,204,301,302,401,403", "-s"]
+parser: lines
+timeout: 20m

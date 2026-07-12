@@ -43,19 +43,20 @@ Project → Scope Engine → Asset Graph → DAG Pipeline → Intelligence → T
 
 | Stage | Status | Tool(s) |
 |-------|:--:|--------|
-| Subdomain enumeration | ✅ | subfinder, assetfinder (+ any plugin in category) |
+| Subdomain enumeration | ✅ | subfinder, assetfinder, tlsx, alterx, dnsgen (+ any plugin) |
 | DNS resolution / liveness | ✅ | dnsx |
 | HTTP probing (status/title/tech/favicon) | ✅ | httpx (JSON parsed into `http_services`) |
-| Crawling | ✅ | katana |
+| Crawling | ✅ | katana, gospider, hakrawler |
 | Archive URLs | ✅ | gau, waybackurls |
-| JS surface extraction | 🟡 | filters JS URLs; deep JS endpoint/secret mining planned |
+| Deep JS analysis (endpoints/secrets/api bases) | ✅ | fetches JS via shared client, extracts endpoints + secrets + API bases |
 | Port scanning | ✅ | naabu |
-| ASN / infra mapping | ✅ | asnmap |
+| ASN / infra mapping | ✅ | asnmap, cdncheck |
 | Nuclei / takeover | ✅ | nuclei, nuclei (takeover tag) |
+| Content discovery / XSS | ✅ | ffuf, dalfox, kxss plugins |
 | Screenshots | ✅ | gowitness (raw output captured) |
-| Swagger / OpenAPI parsing | 🟡 | detects specs; full method/param/auth extraction planned |
-| GraphQL analysis | 🟡 | detects endpoints; introspection + op-classification planned |
-| Plugin system (add tool = add file) | ✅ | `plugins/*.yaml`, placeholders, stdin, parsers |
+| Swagger / OpenAPI parsing | ✅ | full path/method/param/security extraction + curl collection + unauth list |
+| GraphQL analysis | ✅ | introspection probe generation + operation-impact classification |
+| Plugin system (add tool = add file) | ✅ | `plugins/*.yaml` (22 tools), placeholders, stdin, parsers |
 | Tool health manager (`doctor`) | ✅ | installed/missing per plugin; profile-scoped hint |
 | Plugin install/disable from CLI | ⬜ | `plugin list` done; install/disable planned |
 | Per-host smart rate limiting | ✅ | in `httpx` client (per-host interval + 429/503 backoff) |
@@ -73,7 +74,7 @@ Project → Scope Engine → Asset Graph → DAG Pipeline → Intelligence → T
 | Favicon / TLS-cert correlation clusters | ✅ | surfaces related/hidden infrastructure |
 | Finding fingerprint + duplicate detection | ✅ | exact fingerprint + token similarity |
 | Historical diff | 🟡 | `monitor` reports host delta; response-hash diff planned |
-| Secret confidence scoring | 🟡 | model exists; extraction/scoring pass planned |
+| Secret extraction + confidence scoring | ✅ | 16 secret patterns, denylist, masking, prod-context boost |
 | Python intelligence microservice | ⬜ | optional service for semantic dedup, endpoint classification |
 
 ---
@@ -86,9 +87,9 @@ Project → Scope Engine → Asset Graph → DAG Pipeline → Intelligence → T
 | Multi-identity authorization comparator | ✅ | replays one request across identities |
 | Access-control verdict + confidence | ✅ | status/body-hash/similarity/length/anon/mutating signals |
 | Shared HTTP service (cookie jar, cache, RL) | ✅ | one client for all modules |
-| State-change detector (before/after diff) | ⬜ | GET-before / GET-after to confirm mutations |
+| State-change detector (before/after diff) | ✅ | `authz -read`: GET-before / mutate / GET-after → confirms candidate→confirmed |
 | Auth surface detection | ✅ | login/oauth/token/reset routes flagged |
-| BOLA/BFLA workspace batch mode | 🟡 | single-request done; batch over endpoint set planned |
+| BOLA/BFLA workspace batch mode | ✅ | `authz-batch`: auto-tests every IDOR/sensitive endpoint across identities |
 
 ---
 
@@ -110,9 +111,10 @@ Project → Scope Engine → Asset Graph → DAG Pipeline → Intelligence → T
 
 | Feature | Status | Notes |
 |---------|:--:|-------|
-| CLI | ✅ | scan, monitor, doctor, plugin, query, export, assets, endpoints, findings, identity, authz, report, serve, version |
+| CLI | ✅ | scan, monitor, doctor, plugin, query, export, assets, endpoints, findings, secrets, identity, authz, authz-batch, graph, report, serve, version |
+| Config file (`tyrion.yaml` / `~/.tyrion.yaml`) | ✅ | defaults for profile/concurrency/timeout/webhook + API-key env export |
 | Web dashboard | ✅ | `serve`: JSON API + single-page HTML (projects, kinds, live query) |
-| Notifications (Slack/Discord/webhook) | ⬜ | on new asset / new high finding |
+| Notifications (Slack/Discord/webhook) | ✅ | scan summary + critical-target count via `webhook` / `TYRION_WEBHOOK` |
 | Team collaboration / multi-user | ⬜ | needs the SQL backend |
 | Continuous monitoring scheduler | 🟡 | `monitor` command done; cron/daemon wrapper planned |
 
@@ -131,11 +133,16 @@ Project → Scope Engine → Asset Graph → DAG Pipeline → Intelligence → T
 
 ## 9. What to build next (highest leverage)
 
-1. **Deep JS analysis** — endpoint + secret extraction from downloaded JS, wired
-   into normalization and scoring.
-2. **State-change detector** — turn authz findings from *candidate* to
-   *confirmed* by diffing object state before/after.
-3. **Full Swagger/GraphQL parsers** — emit attack collections and feed the authz
-   workspace with a ready request set.
-4. **Notifications + continuous daemon** — close the monitoring loop.
-5. **Distributed workers** — controller + `worker join` for fleet-scale scans.
+Deep JS analysis, the state-change detector, full Swagger/GraphQL parsing,
+secret extraction, notifications, and the BOLA batch workspace are now
+implemented. Remaining high-leverage work:
+
+1. **Continuous daemon** — wrap `monitor` in a scheduler with per-target
+   intervals and webhook alerts on the delta.
+2. **Response-hash historical diff** — flag *changed* endpoints (not just new
+   hosts) so scoring can boost novelty.
+3. **Distributed workers** — controller + `worker join` for fleet-scale scans.
+4. **SQL backend + multi-user** — swap the store implementation to unlock team
+   collaboration.
+5. **Plugin install/disable from CLI** and a Python intelligence microservice
+   for semantic dedup / endpoint classification.

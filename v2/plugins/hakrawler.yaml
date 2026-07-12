@@ -1,0 +1,7 @@
+name: hakrawler
+category: crawl
+binary: hakrawler
+args: []
+stdin_file: "{{infile}}"
+parser: lines
+timeout: 15m

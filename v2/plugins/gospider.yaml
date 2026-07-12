@@ -1,0 +1,6 @@
+name: gospider
+category: crawl
+binary: gospider
+args: ["-S", "{{infile}}", "-q", "-t", "5", "-c", "10", "-d", "3"]
+parser: lines
+timeout: 20m

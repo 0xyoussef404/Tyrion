@@ -44,12 +44,29 @@ go build -o tyrion ./cmd/tyrion      # single static binary, no deps
 # Multi-identity authorization testing (the signature feature)
 ./tyrion identity example.com add anonymous -priv 0
 ./tyrion identity example.com add admin -priv 100 -header "Authorization: Bearer <JWT>"
-./tyrion authz example.com request.txt      # replays across identities, flags BFLA
+./tyrion authz example.com request.txt                 # replays across identities, flags BFLA
+./tyrion authz example.com request.txt -read read.txt  # + state-change confirm (candidate->confirmed)
+./tyrion authz-batch example.com -base https://api.example.com  # auto-test all IDOR/sensitive endpoints
+
+# Intelligence views
+./tyrion secrets example.com                 # discovered secrets (masked)
+./tyrion graph example.com                   # shared-favicon / shared-cert clusters
 
 # Incremental monitoring + report + dashboard
 ./tyrion monitor example.com
 ./tyrion report example.com
 ./tyrion serve                               # http://127.0.0.1:8088
+```
+
+Optional `tyrion.yaml` (or `~/.tyrion.yaml`) for defaults + API keys:
+
+```yaml
+profile: fast
+concurrency: 40
+timeout: 25m
+webhook: https://hooks.slack.com/services/XXX   # or set TYRION_WEBHOOK
+env_CHAOS_KEY: your-chaos-key                    # exported to tools at runtime
+env_GITHUB_TOKEN: ghp_xxx
 ```
 
 `request.txt` format:
@@ -74,7 +91,8 @@ Content-Type: application/json
 | `internal/engine` | Concurrent DAG scheduler with per-task timeout + fingerprint cache |
 | `internal/httpx` | Shared HTTP client: one cookie jar, response cache, per-host rate limit, 429 backoff |
 | `internal/intel` | Endpoint normalization, 0–100 scoring, asset-graph correlation, similarity/dedup |
-| `internal/authz` | Multi-identity replay + access-control verdict with confidence |
+| `internal/authz` | Multi-identity replay, access-control verdict, and state-change detector |
+| `internal/notify` | Outbound webhook notifications (Slack/Discord/generic) |
 | `internal/findings` | Findings + evidence vault with automatic secret/PII redaction |
 | `internal/reporting` | Markdown reports + PoC evidence packs |
 | `internal/pipeline` | Wires recon stages into the DAG |

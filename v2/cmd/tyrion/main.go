@@ -16,7 +16,9 @@ import (
 
 	"github.com/0xyoussef404/tyrion/internal/config"
 	"github.com/0xyoussef404/tyrion/internal/engine"
+	"github.com/0xyoussef404/tyrion/internal/httpx"
 	"github.com/0xyoussef404/tyrion/internal/model"
+	"github.com/0xyoussef404/tyrion/internal/notify"
 	"github.com/0xyoussef404/tyrion/internal/pipeline"
 	"github.com/0xyoussef404/tyrion/internal/scope"
 	"github.com/0xyoussef404/tyrion/internal/server"
@@ -54,6 +56,12 @@ func main() {
 		err = cmdIdentity(args)
 	case "authz":
 		err = cmdAuthz(args)
+	case "authz-batch":
+		err = cmdAuthzBatch(args)
+	case "graph":
+		err = cmdGraph(args)
+	case "secrets":
+		err = cmdList(args, model.KindSecret)
 	case "monitor":
 		err = cmdMonitor(args)
 	case "report":
@@ -91,7 +99,10 @@ COMMANDS
   assets|endpoints|findings <domain>   Quick listing
   identity <domain> add <name> [flags]   Register an auth identity
   identity <domain> list
-  authz <domain> <request-file>          Multi-identity authorization test
+  authz <domain> <request-file> [-read <f>]   Multi-identity authz test (+ state-change confirm)
+  authz-batch <domain> -base <url>       Auto-test IDOR/sensitive endpoints across identities
+  graph <domain>       Show asset-graph correlation clusters
+  secrets <domain>     List discovered secrets
   report <domain>      Regenerate REPORT.md from the store
   serve                Launch the web dashboard
   version
@@ -119,11 +130,14 @@ type scanOpts struct {
 	concurrency int
 	timeout     time.Duration
 	scopeFile   string
+	webhook     string
 	rest        []string
 }
 
 func parseScanFlags(args []string) (scanOpts, error) {
-	o := scanOpts{profile: "passive", outdir: ".", concurrency: 20, timeout: 20 * time.Minute}
+	s := config.Load()
+	s.ApplyEnv()
+	o := scanOpts{profile: s.Profile, outdir: s.Outdir, concurrency: s.Concurrency, timeout: s.Timeout, webhook: s.Webhook}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		next := func() string {
@@ -223,7 +237,8 @@ func cmdScan(args []string) error {
 
 	pc := &pipeline.Context{
 		Target: domain, Workdir: workdir, Store: st, Scope: sc, Plugins: plugins,
-		Log: func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
+		Client: httpx.New(10, 15*time.Second),
+		Log:    func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
 	}
 
 	fmt.Printf("── Tyrion V2 scan ────────────────────────────────\n")
@@ -263,9 +278,20 @@ func cmdScan(args []string) error {
 	}
 
 	fmt.Printf("── done in %s ── ok=%d failed=%d cached=%d ──\n", run.Duration.Round(time.Second), run.OK, run.Failed, run.Cached)
-	fmt.Printf("  assets=%d http=%d urls=%d endpoints=%d\n",
-		st.Count(model.KindAsset), st.Count(model.KindHTTPService), st.Count(model.KindURL), st.Count(model.KindEndpoint))
+	fmt.Printf("  assets=%d http=%d urls=%d endpoints=%d secrets=%d\n",
+		st.Count(model.KindAsset), st.Count(model.KindHTTPService), st.Count(model.KindURL),
+		st.Count(model.KindEndpoint), st.Count(model.KindSecret))
 	fmt.Printf("  store: %s  ·  report: %s\n", filepath.Join(workdir, ".tyrion"), filepath.Join(workdir, "REPORT.md"))
+
+	// Notifications: high-value summary if a webhook is configured.
+	if o.webhook != "" {
+		crit, _ := st.Query(model.KindEndpoint, "score>=70")
+		n := notify.New(o.webhook)
+		n.Send(fmt.Sprintf("Tyrion scan complete: %s (%s)", domain, o.profile),
+			fmt.Sprintf("assets=%d http=%d endpoints=%d secrets=%d critical-targets=%d",
+				st.Count(model.KindAsset), st.Count(model.KindHTTPService),
+				st.Count(model.KindEndpoint), st.Count(model.KindSecret), len(crit)))
+	}
 	_ = results
 	return nil
 }

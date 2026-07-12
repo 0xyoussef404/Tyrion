@@ -1,0 +1,6 @@
+name: tlsx
+category: subdomain-enumeration
+binary: tlsx
+args: ["-l", "{{infile}}", "-silent", "-san", "-cn", "-resp-only"]
+parser: host-lines
+timeout: 10m

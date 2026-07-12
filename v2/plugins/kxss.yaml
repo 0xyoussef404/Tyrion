@@ -1,0 +1,7 @@
+name: kxss
+category: vuln-scan
+binary: kxss
+args: []
+stdin_file: "{{infile}}"
+parser: lines
+timeout: 15m

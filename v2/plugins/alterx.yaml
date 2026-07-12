@@ -1,0 +1,6 @@
+name: alterx
+category: subdomain-enumeration
+binary: alterx
+args: ["-l", "{{infile}}", "-silent"]
+parser: host-lines
+timeout: 10m

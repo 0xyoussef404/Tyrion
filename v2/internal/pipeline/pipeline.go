@@ -15,6 +15,7 @@ import (
 
 	"github.com/0xyoussef404/tyrion/internal/config"
 	"github.com/0xyoussef404/tyrion/internal/engine"
+	"github.com/0xyoussef404/tyrion/internal/httpx"
 	"github.com/0xyoussef404/tyrion/internal/intel"
 	"github.com/0xyoussef404/tyrion/internal/model"
 	"github.com/0xyoussef404/tyrion/internal/reporting"
@@ -30,6 +31,7 @@ type Context struct {
 	Store   *store.Store
 	Scope   *scope.Scope
 	Plugins map[string]*tools.Plugin
+	Client  *httpx.Client // shared HTTP service (fetching JS, specs, ...)
 	Log     func(format string, args ...any)
 }
 
@@ -277,42 +279,120 @@ func stageArchives(ctx context.Context, pc *Context) error {
 }
 
 func stageJS(ctx context.Context, pc *Context) error {
-	n := 0
+	// Collect JS URLs.
+	var jsURLs []string
 	for _, u := range pc.urlsInStore() {
 		if strings.Contains(strings.ToLower(u), ".js") {
-			pc.Store.Put(&model.URL{ID: model.ID("js", u), Raw: u, Host: hostOf(u),
-				Path: pathOf(u), Source: "js"})
-			n++
+			jsURLs = append(jsURLs, u)
+			pc.Store.Put(&model.URL{ID: model.ID("js", u), Raw: u, Host: hostOf(u), Path: pathOf(u), Source: "js"})
 		}
 	}
-	pc.Log("  javascript urls: %d", n)
+	jsURLs = model.SortedUnique(jsURLs)
+
+	// Fetch & analyze (bounded) — needs the shared HTTP client.
+	fetched, eps, secrets := 0, 0, 0
+	if pc.Client != nil {
+		limit := 60
+		for i, u := range jsURLs {
+			if i >= limit {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			resp, err := pc.Client.Do("GET", u, nil, nil, "recon")
+			if err != nil || resp == nil || len(resp.Body) == 0 {
+				continue
+			}
+			fetched++
+			a := intel.AnalyzeJS(u, string(resp.Body))
+			for _, ep := range a.Endpoints {
+				nz := intel.Normalize(ep)
+				pc.Store.Put(&model.Endpoint{ID: model.ID("ep", nz.Template), Template: nz.Template,
+					VarTypes: nz.VarTypes, IDORCand: nz.IsIDORCandidate(),
+					Sensitive: intel.Sensitive(nz.Template), Source: "js", Count: 1})
+				eps++
+			}
+			for _, abs := range a.URLs {
+				if pc.Scope.Allows(hostOf(abs)) {
+					pc.Store.Put(&model.URL{ID: model.ID(abs), Raw: abs, Host: hostOf(abs), Path: pathOf(abs), Source: "js"})
+				}
+			}
+			for _, s := range a.Secrets {
+				pc.Store.Put(s)
+				secrets++
+			}
+		}
+	}
+	pc.Log("  javascript: %d urls, %d fetched, %d endpoints, %d secrets", len(jsURLs), fetched, eps, secrets)
 	return nil
 }
 
 func stageSwagger(ctx context.Context, pc *Context) error {
-	n := 0
+	var curls, unauth []string
+	specs, ops := 0, 0
 	for _, u := range pc.urlsInStore() {
 		l := strings.ToLower(u)
-		if strings.Contains(l, "swagger") || strings.Contains(l, "openapi") || strings.Contains(l, "api-docs") {
+		if !(strings.Contains(l, "swagger") || strings.Contains(l, "openapi") || strings.Contains(l, "api-docs")) {
+			continue
+		}
+		if pc.Client == nil {
 			pc.Store.Put(&model.Endpoint{ID: model.ID("swagger", u), Template: intel.Normalize(u).Template,
 				Sensitive: true, Source: "swagger", Count: 1})
-			n++
+			continue
+		}
+		resp, err := pc.Client.Do("GET", u, nil, nil, "recon")
+		if err != nil || resp == nil || resp.Status != 200 {
+			continue
+		}
+		eps, base := intel.ParseOpenAPI(resp.Body)
+		if len(eps) == 0 {
+			continue
+		}
+		specs++
+		if base == "" {
+			base = "https://" + hostOf(u)
+		}
+		for _, ep := range eps {
+			ops++
+			pc.Store.Put(&model.Endpoint{
+				ID: model.ID("swagger", ep.Method, base+ep.Path), Template: intel.Normalize(base + ep.Path).Template,
+				Methods: []string{ep.Method}, Params: ep.Params, Sensitive: true, Source: "swagger", Count: 1,
+			})
+			curls = append(curls, ep.Curl(base))
+			if !ep.Auth {
+				unauth = append(unauth, ep.Method+" "+base+ep.Path)
+			}
 		}
 	}
-	pc.Log("  swagger/openapi endpoints: %d", n)
+	if len(curls) > 0 {
+		pc.writeLines("swagger_curls.txt", curls)
+	}
+	if len(unauth) > 0 {
+		pc.writeLines("swagger_unauth.txt", unauth)
+	}
+	pc.Log("  swagger: %d specs, %d operations, %d unauthenticated", specs, ops, len(unauth))
 	return nil
 }
 
 func stageGraphQL(ctx context.Context, pc *Context) error {
+	var curls []string
 	n := 0
 	for _, u := range pc.urlsInStore() {
-		if strings.Contains(strings.ToLower(u), "graphql") {
-			pc.Store.Put(&model.Endpoint{ID: model.ID("graphql", u), Template: intel.Normalize(u).Template,
-				Sensitive: true, Source: "graphql", Count: 1})
-			n++
+		if !strings.Contains(strings.ToLower(u), "graphql") {
+			continue
 		}
+		pc.Store.Put(&model.Endpoint{ID: model.ID("graphql", u), Template: intel.Normalize(u).Template,
+			Sensitive: true, Source: "graphql", Count: 1})
+		curls = append(curls, intel.IntrospectionCurl(u))
+		n++
 	}
-	pc.Log("  graphql endpoints: %d", n)
+	if len(curls) > 0 {
+		pc.writeLines("graphql_introspection.txt", model.SortedUnique(curls))
+	}
+	pc.Log("  graphql endpoints: %d (introspection probes written)", n)
 	return nil
 }
 

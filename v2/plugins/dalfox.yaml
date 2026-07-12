@@ -1,0 +1,6 @@
+name: dalfox
+category: vuln-scan
+binary: dalfox
+args: ["file", "{{infile}}", "--silence", "--no-spinner"]
+parser: lines
+timeout: 30m
