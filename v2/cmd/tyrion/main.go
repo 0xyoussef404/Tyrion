@@ -64,6 +64,20 @@ func main() {
 		err = cmdList(args, model.KindSecret)
 	case "monitor":
 		err = cmdMonitor(args)
+	case "watch":
+		err = cmdWatch(args)
+	case "dorks":
+		err = cmdDorks(args)
+	case "bypass":
+		err = cmdBypass(args)
+	case "cors":
+		err = cmdCORS(args)
+	case "params":
+		err = cmdParams(args)
+	case "juicy":
+		err = cmdJuicy(args)
+	case "playbook":
+		err = cmdPlaybook(args)
 	case "report":
 		err = cmdReport(args)
 	case "serve":
@@ -92,6 +106,7 @@ USAGE
 COMMANDS
   scan <domain>        Run the recon pipeline (see flags below)
   monitor <domain>     Incremental re-scan; report what changed
+  watch <domain> -interval <dur>   Continuously monitor on an interval (webhook alerts)
   doctor               Check tool health for a profile
   plugin list          List loaded tool plugins
   query <domain> <kind> <expr>   Query the store (e.g. "score>50 and template contains api")
@@ -103,6 +118,12 @@ COMMANDS
   authz-batch <domain> -base <url>       Auto-test IDOR/sensitive endpoints across identities
   graph <domain>       Show asset-graph correlation clusters
   secrets <domain>     List discovered secrets
+  params <domain>      List mined parameters (fuzzing wordlist)
+  juicy <domain>       Show juicy URLs grouped by category
+  playbook <domain>    Tech-specific attack suggestions from fingerprints
+  dorks <domain>       Generate Google/GitHub/Shodan dorks
+  bypass <url>         Try 401/403 bypass techniques (active)
+  cors <url>           Check a URL for CORS misconfiguration (active)
   report <domain>      Regenerate REPORT.md from the store
   serve                Launch the web dashboard
   version

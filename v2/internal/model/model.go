@@ -121,6 +121,16 @@ type Endpoint struct {
 func (e *Endpoint) RecordKind() string { return KindEndpoint }
 func (e *Endpoint) RecordID() string   { return e.ID }
 
+// Parameter is a discovered request parameter (for fuzzing wordlists).
+type Parameter struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Count int    `json:"count,omitempty"`
+}
+
+func (p *Parameter) RecordKind() string { return KindParameter }
+func (p *Parameter) RecordID() string   { return p.ID }
+
 // Secret is a discovered credential/token with a confidence score.
 type Secret struct {
 	ID         string `json:"id"`

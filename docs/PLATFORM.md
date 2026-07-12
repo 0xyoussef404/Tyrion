@@ -53,6 +53,9 @@ Project → Scope Engine → Asset Graph → DAG Pipeline → Intelligence → T
 | ASN / infra mapping | ✅ | asnmap, cdncheck |
 | Nuclei / takeover | ✅ | nuclei, nuclei (takeover tag) |
 | Content discovery / XSS | ✅ | ffuf, dalfox, kxss plugins |
+| Vulnerability classifier (gf-style) | ✅ | buckets URLs: xss/sqli/ssrf/lfi/redirect/rce/ssti/idor |
+| Parameter mining | ✅ | frequency-ranked fuzzing wordlist |
+| Juicy-path grep | ✅ | config/backup/secret/vcs/api/admin/debug/upload buckets |
 | Screenshots | ✅ | gowitness (raw output captured) |
 | Swagger / OpenAPI parsing | ✅ | full path/method/param/security extraction + curl collection + unauth list |
 | GraphQL analysis | ✅ | introspection probe generation + operation-impact classification |
@@ -75,6 +78,8 @@ Project → Scope Engine → Asset Graph → DAG Pipeline → Intelligence → T
 | Finding fingerprint + duplicate detection | ✅ | exact fingerprint + token similarity |
 | Historical diff | 🟡 | `monitor` reports host delta; response-hash diff planned |
 | Secret extraction + confidence scoring | ✅ | 16 secret patterns, denylist, masking, prod-context boost |
+| Tech playbooks | ✅ | 18 stacks → concrete attack paths (Spring/Jenkins/GitLab/Grafana/Laravel/…) |
+| Dork generator + Shodan favicon pivot | ✅ | Google/GitHub/Shodan queries + `http.favicon.hash` pivot |
 | Python intelligence microservice | ⬜ | optional service for semantic dedup, endpoint classification |
 
 ---
@@ -90,6 +95,9 @@ Project → Scope Engine → Asset Graph → DAG Pipeline → Intelligence → T
 | State-change detector (before/after diff) | ✅ | `authz -read`: GET-before / mutate / GET-after → confirms candidate→confirmed |
 | Auth surface detection | ✅ | login/oauth/token/reset routes flagged |
 | BOLA/BFLA workspace batch mode | ✅ | `authz-batch`: auto-tests every IDOR/sensitive endpoint across identities |
+| CORS misconfiguration checker | ✅ | reflected-origin / null / wildcard + credentials → findings |
+| 401/403 bypass generator | ✅ | 11 path tricks + 9 header spoofs, actively tested |
+| Security-header analysis | ✅ | flags missing CSP/HSTS/XFO/… per service |
 
 ---
 
@@ -111,12 +119,12 @@ Project → Scope Engine → Asset Graph → DAG Pipeline → Intelligence → T
 
 | Feature | Status | Notes |
 |---------|:--:|-------|
-| CLI | ✅ | scan, monitor, doctor, plugin, query, export, assets, endpoints, findings, secrets, identity, authz, authz-batch, graph, report, serve, version |
+| CLI | ✅ | scan, monitor, watch, doctor, plugin, query, export, assets, endpoints, findings, secrets, params, juicy, playbook, dorks, bypass, cors, identity, authz, authz-batch, graph, report, serve, version |
 | Config file (`tyrion.yaml` / `~/.tyrion.yaml`) | ✅ | defaults for profile/concurrency/timeout/webhook + API-key env export |
-| Web dashboard | ✅ | `serve`: JSON API + single-page HTML (projects, kinds, live query) |
-| Notifications (Slack/Discord/webhook) | ✅ | scan summary + critical-target count via `webhook` / `TYRION_WEBHOOK` |
+| Web dashboard (light/dark mode) | ✅ | `serve`: JSON API + single-page HTML, theme toggle, live query |
+| Notifications (Slack/Discord/webhook) | ✅ | scan summary + `watch` new-host alerts via `webhook` / `TYRION_WEBHOOK` |
+| Continuous monitoring | ✅ | `watch <domain> -interval <dur>` loop with webhook delta alerts |
 | Team collaboration / multi-user | ⬜ | needs the SQL backend |
-| Continuous monitoring scheduler | 🟡 | `monitor` command done; cron/daemon wrapper planned |
 
 ---
 
@@ -134,15 +142,15 @@ Project → Scope Engine → Asset Graph → DAG Pipeline → Intelligence → T
 ## 9. What to build next (highest leverage)
 
 Deep JS analysis, the state-change detector, full Swagger/GraphQL parsing,
-secret extraction, notifications, and the BOLA batch workspace are now
-implemented. Remaining high-leverage work:
+secret extraction, notifications, the BOLA batch workspace, the vuln classifier,
+param mining, juicy grep, CORS/403-bypass/security-header checks, tech
+playbooks, dork generation, the continuous `watch` daemon, and the light/dark
+dashboard are all implemented. Remaining high-leverage work:
 
-1. **Continuous daemon** — wrap `monitor` in a scheduler with per-target
-   intervals and webhook alerts on the delta.
-2. **Response-hash historical diff** — flag *changed* endpoints (not just new
+1. **Response-hash historical diff** — flag *changed* endpoints (not just new
    hosts) so scoring can boost novelty.
-3. **Distributed workers** — controller + `worker join` for fleet-scale scans.
-4. **SQL backend + multi-user** — swap the store implementation to unlock team
+2. **Distributed workers** — controller + `worker join` for fleet-scale scans.
+3. **SQL backend + multi-user** — swap the store implementation to unlock team
    collaboration.
-5. **Plugin install/disable from CLI** and a Python intelligence microservice
+4. **Plugin install/disable from CLI** and a Python intelligence microservice
    for semantic dedup / endpoint classification.

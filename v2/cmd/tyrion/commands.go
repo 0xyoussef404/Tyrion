@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0xyoussef404/tyrion/internal/active"
 	"github.com/0xyoussef404/tyrion/internal/authz"
 	"github.com/0xyoussef404/tyrion/internal/config"
 	"github.com/0xyoussef404/tyrion/internal/engine"
@@ -18,6 +19,7 @@ import (
 	"github.com/0xyoussef404/tyrion/internal/httpx"
 	"github.com/0xyoussef404/tyrion/internal/intel"
 	"github.com/0xyoussef404/tyrion/internal/model"
+	"github.com/0xyoussef404/tyrion/internal/notify"
 	"github.com/0xyoussef404/tyrion/internal/pipeline"
 	"github.com/0xyoussef404/tyrion/internal/reporting"
 	"github.com/0xyoussef404/tyrion/internal/scope"
@@ -424,6 +426,220 @@ func concreteURL(template, base string) string {
 		return "https://" + u
 	}
 	return ""
+}
+
+// dorks <domain>
+func cmdDorks(args []string) error {
+	domain, err := mustDomain(args)
+	if err != nil {
+		return err
+	}
+	d := intel.Dorks(domain)
+	for _, src := range []string{"google", "github", "shodan"} {
+		fmt.Printf("# %s\n", src)
+		for _, q := range d[src] {
+			fmt.Println(q)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+// bypass <url> — active 401/403 bypass attempts.
+func cmdBypass(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: tyrion bypass <url>")
+	}
+	url := args[0]
+	client := httpx.New(5, 15*time.Second)
+	base, err := client.Do("GET", url, nil, nil, "baseline")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("baseline %s -> %d\n", url, base.Status)
+	hits := active.RunBypass(client, url, base.Status)
+	if len(hits) == 0 {
+		fmt.Println("no bypass found")
+		return nil
+	}
+	for _, h := range hits {
+		fmt.Printf("[BYPASS %d] %-20s %s %v\n", h.Status, h.Label, h.URL, h.Headers)
+	}
+	return nil
+}
+
+// cors <url> — active CORS misconfiguration check.
+func cmdCORS(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: tyrion cors <url>")
+	}
+	res := active.CheckCORS(httpx.New(5, 15*time.Second), args[0])
+	if res.Vulnerable {
+		fmt.Printf("[VULNERABLE] %s\n  %s\n  ACAO=%s ACAC=%s\n", res.URL, res.Reason, res.ACAO, res.ACAC)
+	} else {
+		fmt.Printf("[ok] %s (ACAO=%q)\n", res.URL, res.ACAO)
+	}
+	return nil
+}
+
+// params <domain> — mined parameters (from store, else from urls).
+func cmdParams(args []string) error {
+	domain, err := mustDomain(args)
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(filepath.Join(".", domain, ".tyrion"))
+	if err != nil {
+		return err
+	}
+	if st.Count(model.KindParameter) > 0 {
+		for _, r := range st.All(model.KindParameter) {
+			fmt.Println(strv(r, "name"))
+		}
+		return nil
+	}
+	var urls []string
+	for _, r := range st.All(model.KindURL) {
+		urls = append(urls, strv(r, "raw"))
+	}
+	for _, p := range intel.MineParams(urls) {
+		fmt.Printf("%-24s %d\n", p.Name, p.Count)
+	}
+	return nil
+}
+
+// juicy <domain> — juicy URLs grouped by category.
+func cmdJuicy(args []string) error {
+	domain, err := mustDomain(args)
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(filepath.Join(".", domain, ".tyrion"))
+	if err != nil {
+		return err
+	}
+	var urls []string
+	for _, r := range st.All(model.KindURL) {
+		urls = append(urls, strv(r, "raw"))
+	}
+	buckets := intel.JuicyBuckets(urls)
+	cats := make([]string, 0, len(buckets))
+	for c := range buckets {
+		cats = append(cats, c)
+	}
+	sort.Strings(cats)
+	for _, c := range cats {
+		fmt.Printf("# %s (%d)\n", c, len(buckets[c]))
+		for _, u := range buckets[c] {
+			fmt.Println(u)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+// playbook <domain> — tech attack suggestions from detected technologies.
+func cmdPlaybook(args []string) error {
+	domain, err := mustDomain(args)
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(filepath.Join(".", domain, ".tyrion"))
+	if err != nil {
+		return err
+	}
+	techSet := map[string]bool{}
+	for _, s := range st.All(model.KindHTTPService) {
+		if arr, ok := s["tech"].([]any); ok {
+			for _, t := range arr {
+				techSet[fmt.Sprint(t)] = true
+			}
+		}
+	}
+	var techs []string
+	for t := range techSet {
+		techs = append(techs, t)
+	}
+	plays := intel.PlaybookFor(techs)
+	if len(plays) == 0 {
+		fmt.Println("no known-tech playbooks matched (detected tech:", techs, ")")
+		return nil
+	}
+	for tech, ps := range plays {
+		fmt.Printf("# %s\n", tech)
+		for _, p := range ps {
+			fmt.Printf("  - %s\n", p)
+		}
+	}
+	return nil
+}
+
+// watch <domain> -interval <dur> — continuous monitoring loop.
+func cmdWatch(args []string) error {
+	interval := time.Hour
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-interval" && i+1 < len(args) {
+			if d, err := time.ParseDuration(args[i+1]); err == nil {
+				interval = d
+			}
+			i++
+			continue
+		}
+		rest = append(rest, args[i])
+	}
+	domain, err := mustDomain(rest)
+	if err != nil {
+		return err
+	}
+	settings := config.Load()
+	notifier := notify.New(settings.Webhook)
+	fmt.Printf("watching %s every %s (Ctrl-C to stop)\n", domain, interval)
+	for {
+		added, removed, e := runContinuous(domain)
+		if e != nil {
+			fmt.Fprintln(os.Stderr, "watch error:", e)
+		} else {
+			fmt.Printf("[%s] +%d new, -%d gone hosts\n", time.Now().Format("15:04:05"), len(added), len(removed))
+			if len(added) > 0 && notifier.Enabled() {
+				notifier.Send("Tyrion watch: "+domain,
+					fmt.Sprintf("%d new hosts:\n%s", len(added), strings.Join(added, "\n")))
+			}
+		}
+		time.Sleep(interval)
+	}
+}
+
+// runContinuous runs one continuous-profile pass and returns the host delta.
+func runContinuous(domain string) (added, removed []string, err error) {
+	workdir, st, err := openProject(".", domain)
+	if err != nil {
+		return nil, nil, err
+	}
+	before := hostSet(st)
+	plugins, _ := tools.Load(findPluginsDir())
+	prof, _ := config.Get("continuous")
+	pc := &pipeline.Context{Target: domain, Workdir: workdir, Store: st, Scope: scope.New(domain),
+		Plugins: plugins, Client: httpx.New(10, 15*time.Second), Log: func(string, ...any) {}}
+	eng := engine.New(20, 20*time.Minute)
+	if _, err := eng.Run(context.Background(), pipeline.Build(pc, prof)); err != nil {
+		return nil, nil, err
+	}
+	st.Flush()
+	after := hostSet(st)
+	for h := range after {
+		if !before[h] {
+			added = append(added, h)
+		}
+	}
+	for h := range before {
+		if !after[h] {
+			removed = append(removed, h)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed, nil
 }
 
 // report <domain>

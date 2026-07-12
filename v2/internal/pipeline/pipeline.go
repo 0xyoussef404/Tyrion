@@ -13,8 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0xyoussef404/tyrion/internal/active"
 	"github.com/0xyoussef404/tyrion/internal/config"
 	"github.com/0xyoussef404/tyrion/internal/engine"
+	"github.com/0xyoussef404/tyrion/internal/findings"
 	"github.com/0xyoussef404/tyrion/internal/httpx"
 	"github.com/0xyoussef404/tyrion/internal/intel"
 	"github.com/0xyoussef404/tyrion/internal/model"
@@ -41,43 +43,53 @@ type stageFn func(ctx context.Context, pc *Context) error
 // desiredDeps maps a stage to the stages it prefers to run after. The builder
 // intersects these with the stages actually present in the profile.
 var desiredDeps = map[string][]string{
-	config.StageDNSResolve:  {config.StageSubEnum},
-	config.StageASN:         {config.StageSubEnum},
-	config.StageArchives:    {config.StageSubEnum},
-	config.StageHTTPProbe:   {config.StageDNSResolve},
-	config.StagePortScan:    {config.StageDNSResolve},
-	config.StageTakeover:    {config.StageDNSResolve},
-	config.StageCrawl:       {config.StageHTTPProbe},
-	config.StageNuclei:      {config.StageHTTPProbe},
-	config.StageScreens:     {config.StageHTTPProbe},
-	config.StageGraph:       {config.StageHTTPProbe},
-	config.StageJS:          {config.StageHTTPProbe, config.StageCrawl, config.StageArchives},
-	config.StageSwagger:     {config.StageCrawl, config.StageArchives, config.StageJS},
-	config.StageGraphQL:     {config.StageCrawl, config.StageJS},
-	config.StageAuthSurface: {config.StageCrawl, config.StageArchives, config.StageHTTPProbe},
-	config.StageNormalize:   {config.StageCrawl, config.StageArchives, config.StageHTTPProbe},
-	config.StageScore:       {config.StageNormalize},
+	config.StageDNSResolve:   {config.StageSubEnum},
+	config.StageASN:          {config.StageSubEnum},
+	config.StageArchives:     {config.StageSubEnum},
+	config.StageHTTPProbe:    {config.StageDNSResolve},
+	config.StagePortScan:     {config.StageDNSResolve},
+	config.StageTakeover:     {config.StageDNSResolve},
+	config.StageCrawl:        {config.StageHTTPProbe},
+	config.StageNuclei:       {config.StageHTTPProbe},
+	config.StageScreens:      {config.StageHTTPProbe},
+	config.StageGraph:        {config.StageHTTPProbe},
+	config.StageJS:           {config.StageHTTPProbe, config.StageCrawl, config.StageArchives},
+	config.StageSwagger:      {config.StageCrawl, config.StageArchives, config.StageJS},
+	config.StageGraphQL:      {config.StageCrawl, config.StageJS},
+	config.StageAuthSurface:  {config.StageCrawl, config.StageArchives, config.StageHTTPProbe},
+	config.StageNormalize:    {config.StageCrawl, config.StageArchives, config.StageHTTPProbe, config.StageJS},
+	config.StageScore:        {config.StageNormalize},
+	config.StageVulnClassify: {config.StageCrawl, config.StageArchives, config.StageJS},
+	config.StageParamMine:    {config.StageCrawl, config.StageArchives, config.StageJS},
+	config.StageJuicy:        {config.StageCrawl, config.StageArchives, config.StageJS},
+	config.StageCORS:         {config.StageHTTPProbe},
+	config.StageSecHeaders:   {config.StageHTTPProbe},
 }
 
 var stageImpl = map[string]stageFn{
-	config.StageSubEnum:     stageSubEnum,
-	config.StageDNSResolve:  stageDNSResolve,
-	config.StageHTTPProbe:   stageHTTPProbe,
-	config.StageASN:         stageGenericTool("asn-map", "asnmap", "asn.txt"),
-	config.StagePortScan:    stageGenericTool("port-scan", "naabu", "open_ports.txt"),
-	config.StageCrawl:       stageCrawl,
-	config.StageArchives:    stageArchives,
-	config.StageJS:          stageJS,
-	config.StageNuclei:      stageGenericTool("nuclei", "nuclei", "nuclei.jsonl"),
-	config.StageTakeover:    stageGenericTool("takeover", "nuclei-takeover", "takeover.txt"),
-	config.StageScreens:     stageGenericTool("screenshots", "gowitness", "gowitness.log"),
-	config.StageSwagger:     stageSwagger,
-	config.StageGraphQL:     stageGraphQL,
-	config.StageAuthSurface: stageAuthSurface,
-	config.StageNormalize:   stageNormalize,
-	config.StageScore:       stageScore,
-	config.StageGraph:       stageCorrelate,
-	config.StageReport:      stageReport,
+	config.StageSubEnum:      stageSubEnum,
+	config.StageDNSResolve:   stageDNSResolve,
+	config.StageHTTPProbe:    stageHTTPProbe,
+	config.StageASN:          stageGenericTool("asn-map", "asnmap", "asn.txt"),
+	config.StagePortScan:     stageGenericTool("port-scan", "naabu", "open_ports.txt"),
+	config.StageCrawl:        stageCrawl,
+	config.StageArchives:     stageArchives,
+	config.StageJS:           stageJS,
+	config.StageNuclei:       stageGenericTool("nuclei", "nuclei", "nuclei.jsonl"),
+	config.StageTakeover:     stageGenericTool("takeover", "nuclei-takeover", "takeover.txt"),
+	config.StageScreens:      stageGenericTool("screenshots", "gowitness", "gowitness.log"),
+	config.StageSwagger:      stageSwagger,
+	config.StageGraphQL:      stageGraphQL,
+	config.StageAuthSurface:  stageAuthSurface,
+	config.StageNormalize:    stageNormalize,
+	config.StageScore:        stageScore,
+	config.StageGraph:        stageCorrelate,
+	config.StageVulnClassify: stageVulnClassify,
+	config.StageParamMine:    stageParamMine,
+	config.StageJuicy:        stageJuicy,
+	config.StageCORS:         stageCORS,
+	config.StageSecHeaders:   stageSecHeaders,
+	config.StageReport:       stageReport,
 }
 
 // Build converts a profile into a DAG of engine tasks.
@@ -472,7 +484,130 @@ func stageCorrelate(ctx context.Context, pc *Context) error {
 	return nil
 }
 
+func stageVulnClassify(ctx context.Context, pc *Context) error {
+	buckets := intel.ClassifyURLs(pc.urlsInStore())
+	dir := filepath.Join(pc.Workdir, "vuln_candidates")
+	os.MkdirAll(dir, 0o755)
+	total := 0
+	for class, urls := range buckets {
+		_ = os.WriteFile(filepath.Join(dir, class+".txt"), []byte(strings.Join(urls, "\n")+"\n"), 0o644)
+		total += len(urls)
+	}
+	pc.Log("  vuln candidates: %d urls across %d classes -> vuln_candidates/", total, len(buckets))
+	return nil
+}
+
+func stageParamMine(ctx context.Context, pc *Context) error {
+	stats := intel.MineParams(pc.urlsInStore())
+	var lines []string
+	for i, s := range stats {
+		lines = append(lines, s.Name)
+		if i < 300 {
+			pc.Store.Put(&model.Parameter{ID: model.ID("param", s.Name), Name: s.Name})
+		}
+	}
+	pc.writeLines("parameters.txt", lines)
+	pc.Log("  parameters mined: %d unique", len(stats))
+	return nil
+}
+
+func stageJuicy(ctx context.Context, pc *Context) error {
+	buckets := intel.JuicyBuckets(pc.urlsInStore())
+	dir := filepath.Join(pc.Workdir, "juicy")
+	os.MkdirAll(dir, 0o755)
+	total := 0
+	for cat, urls := range buckets {
+		_ = os.WriteFile(filepath.Join(dir, cat+".txt"), []byte(strings.Join(urls, "\n")+"\n"), 0o644)
+		total += len(urls)
+	}
+	pc.Log("  juicy urls: %d across %d categories -> juicy/", total, len(buckets))
+	return nil
+}
+
+func stageCORS(ctx context.Context, pc *Context) error {
+	if pc.Client == nil {
+		return nil
+	}
+	fm := findings.New(pc.Store)
+	n, hits := 0, 0
+	for _, s := range pc.Store.All(model.KindHTTPService) {
+		if n >= 80 {
+			break
+		}
+		url := strField(s, "url")
+		if url == "" {
+			continue
+		}
+		n++
+		res := active.CheckCORS(pc.Client, url)
+		if res.Vulnerable {
+			hits++
+			f := fm.Add(&model.Finding{
+				Title: "CORS misconfiguration on " + url, Class: "cors", Severity: "medium",
+				Confidence: 80, Score: 60, Target: url, Status: "candidate", Summary: res.Reason,
+			})
+			fm.AddEvidence(&model.Evidence{FindingID: f.ID, Identity: "cors-probe", Status: 200,
+				Request:  "GET " + url + "  (Origin: https://evil-tyrion.example)",
+				Response: "Access-Control-Allow-Origin: " + res.ACAO + "\nAccess-Control-Allow-Credentials: " + res.ACAC})
+		}
+	}
+	pc.Log("  cors: tested %d services, %d misconfigured", n, hits)
+	return nil
+}
+
+func stageSecHeaders(ctx context.Context, pc *Context) error {
+	if pc.Client == nil {
+		return nil
+	}
+	var lines []string
+	n := 0
+	for _, s := range pc.Store.All(model.KindHTTPService) {
+		if n >= 80 {
+			break
+		}
+		url := strField(s, "url")
+		if url == "" {
+			continue
+		}
+		n++
+		resp, err := pc.Client.Do("GET", url, nil, nil, "sec-headers")
+		if err != nil || resp == nil {
+			continue
+		}
+		if missing := active.MissingSecurityHeaders(resp.Header); len(missing) > 0 {
+			lines = append(lines, url+" — missing: "+strings.Join(missing, ", "))
+		}
+	}
+	if len(lines) > 0 {
+		pc.writeLines("security_headers.txt", lines)
+	}
+	pc.Log("  security headers: analyzed %d services, %d with gaps", n, len(lines))
+	return nil
+}
+
 func stageReport(ctx context.Context, pc *Context) error {
+	// Tech playbooks from detected technologies.
+	techSet := map[string]bool{}
+	for _, s := range pc.Store.All(model.KindHTTPService) {
+		for _, t := range strSlice(s, "tech") {
+			techSet[t] = true
+		}
+	}
+	var techs []string
+	for t := range techSet {
+		techs = append(techs, t)
+	}
+	if plays := intel.PlaybookFor(techs); len(plays) > 0 {
+		var lines []string
+		for tech, ps := range plays {
+			lines = append(lines, "## "+tech)
+			for _, p := range ps {
+				lines = append(lines, "  - "+p)
+			}
+		}
+		pc.writeLines("playbooks.txt", lines)
+	}
+
 	md := reporting.Markdown(pc.Store, pc.Target)
 	_ = os.WriteFile(filepath.Join(pc.Workdir, "REPORT.md"), []byte(md), 0o644)
 	pc.Log("  report: REPORT.md")

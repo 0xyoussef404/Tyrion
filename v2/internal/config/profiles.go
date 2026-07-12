@@ -12,24 +12,29 @@ type Profile struct {
 // Stage IDs known to the pipeline. Keeping them as constants avoids typos
 // between the profile table and the pipeline builder.
 const (
-	StageSubEnum     = "subdomain-enum"
-	StageDNSResolve  = "dns-resolve"
-	StageHTTPProbe   = "http-probe"
-	StagePortScan    = "port-scan"
-	StageASN         = "asn-map"
-	StageCrawl       = "crawl"
-	StageArchives    = "archive-urls"
-	StageJS          = "js-analysis"
-	StageNuclei      = "nuclei"
-	StageTakeover    = "takeover"
-	StageSwagger     = "swagger"
-	StageGraphQL     = "graphql"
-	StageScreens     = "screenshots"
-	StageNormalize   = "normalize" // intelligence: endpoint normalization
-	StageScore       = "score"     // intelligence: scoring
-	StageGraph       = "correlate" // intelligence: asset graph
-	StageAuthSurface = "auth-surface"
-	StageReport      = "report"
+	StageSubEnum      = "subdomain-enum"
+	StageDNSResolve   = "dns-resolve"
+	StageHTTPProbe    = "http-probe"
+	StagePortScan     = "port-scan"
+	StageASN          = "asn-map"
+	StageCrawl        = "crawl"
+	StageArchives     = "archive-urls"
+	StageJS           = "js-analysis"
+	StageNuclei       = "nuclei"
+	StageTakeover     = "takeover"
+	StageSwagger      = "swagger"
+	StageGraphQL      = "graphql"
+	StageScreens      = "screenshots"
+	StageNormalize    = "normalize" // intelligence: endpoint normalization
+	StageScore        = "score"     // intelligence: scoring
+	StageGraph        = "correlate" // intelligence: asset graph
+	StageAuthSurface  = "auth-surface"
+	StageVulnClassify = "vuln-classify" // gf-style vuln bucketing
+	StageParamMine    = "param-mine"    // parameter frequency wordlist
+	StageJuicy        = "juicy"         // juicy-file/path grep
+	StageCORS         = "cors"          // active CORS misconfig check
+	StageSecHeaders   = "sec-headers"   // security-header analysis
+	StageReport       = "report"
 )
 
 // Profiles is the built-in catalogue.
@@ -40,20 +45,23 @@ var Profiles = map[string]Profile{
 			StageAuthSurface, StageNormalize, StageScore, StageGraph, StageReport},
 	},
 	"fast": {
-		Name: "fast", Description: "Passive + crawl + JS + light nuclei",
+		Name: "fast", Description: "Passive + crawl + JS + vuln classification",
 		Stages: []string{StageSubEnum, StageDNSResolve, StageHTTPProbe, StageCrawl, StageArchives,
-			StageJS, StageAuthSurface, StageNormalize, StageScore, StageGraph, StageReport},
+			StageJS, StageAuthSurface, StageNormalize, StageScore, StageGraph,
+			StageVulnClassify, StageParamMine, StageJuicy, StageReport},
 	},
 	"deep": {
 		Name: "deep", Description: "Everything: active scanning + full intelligence",
 		Stages: []string{StageSubEnum, StageDNSResolve, StageASN, StageHTTPProbe, StagePortScanID(),
 			StageCrawl, StageArchives, StageJS, StageSwagger, StageGraphQL, StageNuclei, StageTakeover,
-			StageScreens, StageAuthSurface, StageNormalize, StageScore, StageGraph, StageReport},
+			StageScreens, StageAuthSurface, StageNormalize, StageScore, StageGraph,
+			StageVulnClassify, StageParamMine, StageJuicy, StageCORS, StageSecHeaders, StageReport},
 	},
 	"api": {
 		Name: "api", Description: "API-focused: swagger + graphql + JS APIs",
 		Stages: []string{StageSubEnum, StageDNSResolve, StageHTTPProbe, StageCrawl, StageJS,
-			StageSwagger, StageGraphQL, StageAuthSurface, StageNormalize, StageScore, StageReport},
+			StageSwagger, StageGraphQL, StageAuthSurface, StageNormalize, StageScore,
+			StageVulnClassify, StageParamMine, StageCORS, StageReport},
 	},
 	"infra": {
 		Name: "infra", Description: "Infrastructure: ASN + ports + takeover",
