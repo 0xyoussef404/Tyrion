@@ -20,6 +20,18 @@
 
 A comprehensive bash-based advanced reconnaissance tool for bug bounty hunting and security assessments — built with an **Intelligence Layer** that transforms raw recon data into **actionable attack paths**.
 
+> **Where this is going:** Tyrion404 is the stable Bash engine. The next generation — a Go execution engine with a DAG scheduler, SQLite asset store, incremental recon, and a multi-identity authorization workspace — is planned in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+## What's new in v1.1
+
+- **Scan profiles** — one flag (`-profile passive|fast|deep|api|infra|continuous`) instead of a dozen.
+- **Per-tool timeout** — every external tool is hard-capped (`-timeout`, default `20m`); a hung tool can no longer stall the whole scan.
+- **Honest checkpoints** — a step that times out or fails is **not** marked complete, so re-running retries only what didn't finish (instead of silently skipping it).
+- **Profile-aware dependency check** — `-doctor`-style output now only reports tools the selected profile actually uses.
+- **Central log** — every tool start/end/timeout is written to `tyrion.log`.
+- **Run metrics** — end-of-run summary of duration, steps completed/skipped/failed, timeouts, and tools run.
+- **Input validation** — the target domain is validated before it ever reaches a shell.
+
 ## Features
 
 ### Subdomain Enumeration
@@ -78,15 +90,40 @@ A comprehensive bash-based advanced reconnaissance tool for bug bounty hunting a
 - **Screenshots** (`-gowitness`) — Gowitness with HTML report generation
 
 ### Reliability
+- **Scan profiles** — `-profile passive|fast|deep|api|infra|continuous`
+- **Per-tool timeout** — `-timeout` hard-caps every external tool (default `20m`)
 - **ENTER to skip** — any long-running tool, partial results preserved
 - **P to pause / C to resume** — SIGSTOP/SIGCONT control
-- **Checkpoint / Resume** — auto-resumes from last completed step
+- **Checkpoint / Resume** — auto-resumes from last completed step; failed/timed-out steps are retried, not skipped
+- **Central log + run metrics** — `tyrion.log` and an end-of-run metrics summary
 
 ## Usage
 
 ```bash
 ./Tyrion404.sh <domain> [flags]
 ```
+
+### Profiles (v1.1)
+
+Pick one profile instead of assembling flags by hand:
+
+| Profile | Expands to |
+|---------|-----------|
+| `-profile passive` | Base only — passive enum + DNS + HTTP + URLs + JS + intelligence (default) |
+| `-profile fast` | passive + `-moreurls -jsdeep -gf -grep` |
+| `-profile deep` | Everything — active scanning + full network intelligence |
+| `-profile api` | Swagger/OpenAPI + JS APIs + `-validate -apidisc -cors -methods -verify` |
+| `-profile infra` | `-parallel -asn -port -waf -takeover -vhost` |
+| `-profile continuous` | Lean, re-runnable set for monitoring (leans on checkpoint + historical diff) |
+
+### Execution control (v1.1)
+
+| Flag | Description |
+|------|-------------|
+| `-timeout <dur>` | Per-tool hard timeout (default `20m`, e.g. `30m`, `600s`) |
+| `-concurrency <n>` | Worker-pool parallelism (default `50`) |
+
+`TOOL_TIMEOUT`, `KILL_AFTER`, and `CONCURRENCY` can also be set as environment variables.
 
 ### Flags
 
@@ -112,8 +149,13 @@ A comprehensive bash-based advanced reconnaissance tool for bug bounty hunting a
 ### Examples
 
 ```bash
-# Basic recon
+# Basic recon (passive profile)
 ./Tyrion404.sh target.com
+
+# Profiles — the easy way
+./Tyrion404.sh target.com -profile fast
+./Tyrion404.sh target.com -profile api -timeout 30m
+./Tyrion404.sh target.com -profile deep
 
 # Fast parallel + bruteforce + ASN
 ./Tyrion404.sh target.com -parallel -bruteforce -asn
@@ -163,7 +205,10 @@ target.com/
 ├── takeover_results.txt          # Takeover vulnerabilities
 ├── secrets_found.txt             # JS secrets
 ├── open_ports.txt                # Open ports (Naabu)
-└── ports_detailed.txt            # Service details (Nmap)
+├── ports_detailed.txt            # Service details (Nmap)
+├── tyrion.log                    # Central run log (tool start/end/timeout)
+├── .checkpoint                   # Resume state (removed on a clean finish)
+└── .cache/                       # dns/ http/ js/ swagger/ nuclei/ cache dirs
 ```
 
 ## Author

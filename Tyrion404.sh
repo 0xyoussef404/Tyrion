@@ -42,6 +42,14 @@ ENABLE_VALIDATE=false
 ENABLE_APIDISC=false
 ENABLE_SITEMAP=false
 CUSTOM_WORDLIST=""
+PROFILE=""
+
+# ── v1.1 execution config (override via env or flags) ──
+TOOL_TIMEOUT="${TOOL_TIMEOUT:-20m}"   # hard cap per external tool (see -timeout)
+KILL_AFTER="${KILL_AFTER:-15s}"       # grace before SIGKILL after timeout
+CONCURRENCY="${CONCURRENCY:-50}"      # worker-pool parallelism (see -concurrency)
+CACHE_DIR=".cache"
+LOG_FILE="tyrion.log"
 
 TOTAL_STEPS=0
 CURRENT_STEP=0
@@ -51,6 +59,15 @@ SCAN_PAUSED=false
 CHECKPOINT_FILE=""
 LAST_COMPLETED_KEY=""
 CURRENT_RUNNING_KEY=""
+
+# ── v1.1 run metrics ──
+STEP_FAILED=0
+METRIC_STEPS_OK=0
+METRIC_STEPS_FAILED=0
+METRIC_STEPS_SKIPPED=0
+METRIC_STEPS_TIMEOUT=0
+METRIC_TOOLS_RUN=0
+FAILED_STEPS=()
 
 # ─────────────────────────────────────────────────────────────
 # Checkpoint
@@ -62,6 +79,19 @@ checkpoint_done() {
     local r=1; [ -f "$CHECKPOINT_FILE" ] && grep -qxF "$1=done" "$CHECKPOINT_FILE" 2>/dev/null && r=0; return $r
 }
 checkpoint_init() { CHECKPOINT_FILE=".checkpoint"; }
+
+# ─────────────────────────────────────────────────────────────
+# Logging / Cache / Failure signalling (v1.1)
+# ─────────────────────────────────────────────────────────────
+log_msg() { [ -n "$LOG_FILE" ] && printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>/dev/null; }
+
+cache_init() {
+    mkdir -p "$CACHE_DIR"/{dns,http,js,swagger,nuclei} 2>/dev/null
+}
+
+# Steps signal genuine failure through this sentinel instead of relying on the
+# noisy exit codes of recon tools (grep no-match, warnings, etc. all exit != 0).
+mark_step_failed() { STEP_FAILED=1; [ -n "$1" ] && log_msg "STEP-ERROR $1"; }
 
 # ─────────────────────────────────────────────────────────────
 # Interrupt / Exit
@@ -87,14 +117,30 @@ run_step() {
     local label="$1" key="$2" func="$3"
     if checkpoint_done "$key"; then
         CURRENT_STEP=$((CURRENT_STEP + 1))
+        METRIC_STEPS_SKIPPED=$((METRIC_STEPS_SKIPPED + 1))
         print_info "⏭  Skipping: $label (already completed)"
-        return
+        return 0
     fi
     print_step "$label"
     CURRENT_RUNNING_KEY="$key"
-    $func
-    LAST_COMPLETED_KEY="$key"
-    checkpoint_save "$key"
+    STEP_FAILED=0
+    local _start; _start=$(date +%s)
+
+    "$func"
+
+    local _dur=$(( $(date +%s) - _start ))
+    if [ "$STEP_FAILED" -eq 0 ]; then
+        LAST_COMPLETED_KEY="$key"
+        checkpoint_save "$key"
+        METRIC_STEPS_OK=$((METRIC_STEPS_OK + 1))
+        log_msg "STEP-OK   $key (${_dur}s)"
+    else
+        # Incomplete step is NOT checkpointed, so a resume re-runs it.
+        METRIC_STEPS_FAILED=$((METRIC_STEPS_FAILED + 1))
+        FAILED_STEPS+=("$key")
+        log_msg "STEP-FAIL $key (${_dur}s)"
+        print_warning "$label did not complete cleanly — will retry on resume"
+    fi
     CURRENT_RUNNING_KEY=""
 }
 
@@ -177,8 +223,13 @@ run_with_skip() {
     local cmd="$@"
     CURRENT_TOOL_NAME="$tool_name"
     SCAN_PAUSED=false
+    METRIC_TOOLS_RUN=$((METRIC_TOOLS_RUN + 1))
+    log_msg "TOOL-START $tool_name (timeout=$TOOL_TIMEOUT)"
 
-    setsid bash -c "$cmd" &
+    # Every external tool is hard-capped by `timeout`; a hung tool can no longer
+    # stall the whole scan. Pipes/redirects in $cmd still need a shell, so we run
+    # through bash -c but only ever with our own hardcoded command strings.
+    setsid timeout --signal=TERM --kill-after="$KILL_AFTER" "$TOOL_TIMEOUT" bash -c "$cmd" &
     CURRENT_TOOL_PID=$!
     local tool_pgid=$CURRENT_TOOL_PID
 
@@ -190,6 +241,7 @@ run_with_skip() {
                 [ "$SCAN_PAUSED" = true ] && kill -SIGCONT -- -${tool_pgid} 2>/dev/null && SCAN_PAUSED=false
                 kill -- -${tool_pgid} 2>/dev/null; wait "$CURRENT_TOOL_PID" 2>/dev/null
                 print_warning "Skipped: $CURRENT_TOOL_NAME — partial results saved"
+                log_msg "TOOL-SKIP $CURRENT_TOOL_NAME (user)"
                 CURRENT_TOOL_PID=""; CURRENT_TOOL_NAME=""; SCAN_PAUSED=false; return 2
             elif [[ "$_key" == "p" || "$_key" == "P" ]]; then
                 [ "$SCAN_PAUSED" = false ] && { kill -SIGSTOP -- -${tool_pgid} 2>/dev/null; SCAN_PAUSED=true; echo ""; echo -e "  ${BOLD}${YELLOW}⏸  PAUSED — C to continue | ENTER to skip${NC}"; }
@@ -201,6 +253,14 @@ run_with_skip() {
 
     wait "$CURRENT_TOOL_PID"; local exit_code=$?
     CURRENT_TOOL_PID=""; CURRENT_TOOL_NAME=""; SCAN_PAUSED=false
+    if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ]; then
+        METRIC_STEPS_TIMEOUT=$((METRIC_STEPS_TIMEOUT + 1))
+        print_warning "Timed out after $TOOL_TIMEOUT: $tool_name — partial results kept"
+        mark_step_failed "$tool_name timed out"
+        log_msg "TOOL-TIMEOUT $tool_name (rc=$exit_code)"
+    else
+        log_msg "TOOL-END  $tool_name (rc=$exit_code)"
+    fi
     return $exit_code
 }
 
@@ -216,8 +276,24 @@ check_dependencies() {
     for t in "${core[@]}"; do
         command -v "$t" &>/dev/null && print_success "$t" || { print_warning "$t NOT installed"; missing+=("$t"); }
     done
-    # Optional enhanced tools
-    for t in "github-subdomains" "gitlab-subdomains" "chaos" "crobat" "tlsx" "alterx" "dnsgen" "puredns" "asnmap" "cdncheck" "uro" "unfurl" "jsluice" "cariddi" "arjun" "kxss" "dalfox" "ffuf" "wafw00f"; do
+    # v1.1: only probe tools the enabled steps actually use, so the report
+    # reflects the selected profile instead of every tool Tyrion can touch.
+    local chk=()
+    # Always-on base (passive sources + URL post-processing)
+    chk+=(github-subdomains gitlab-subdomains chaos crobat tlsx unfurl uro)
+    # Flag-gated extras
+    [ "$ENABLE_BRUTEFORCE" = true ] && chk+=(alterx dnsgen puredns dnsx)
+    [ "$ENABLE_ASN" = true ]        && chk+=(asnmap cdncheck)
+    [ "$ENABLE_MOREURLS" = true ]   && chk+=(gau hakrawler cariddi)
+    [ "$ENABLE_JSDEEP" = true ]     && chk+=(jsluice)
+    [ "$ENABLE_ARJUN" = true ]      && chk+=(arjun)
+    [ "$ENABLE_GF" = true ]         && chk+=(kxss dalfox)
+    [ "$ENABLE_VHOST" = true ]      && chk+=(ffuf)
+    [ "$ENABLE_WAF" = true ]        && chk+=(wafw00f)
+    local seen=" "
+    for t in "${chk[@]}"; do
+        case "$seen" in *" $t "*) continue ;; esac
+        seen+="$t "
         command -v "$t" &>/dev/null && print_success "$t" || { print_warning "$t not found (optional)"; optional+=("$t"); }
     done
     [ "$ENABLE_DIRSEARCH" = true ]    && { command -v dirsearch &>/dev/null && print_success "dirsearch" || { print_warning "dirsearch NOT installed"; optional+=("dirsearch"); }; }
@@ -242,10 +318,71 @@ check_dependencies() {
 }
 
 # ─────────────────────────────────────────────────────────────
+# Profiles (v1.1) — one flag instead of a dozen
+# ─────────────────────────────────────────────────────────────
+apply_profile() {
+    case "$1" in
+        passive)
+            # Base only: passive enumeration, DNS, HTTP probe, URLs, JS, intel.
+            : ;;
+        fast)
+            ENABLE_MOREURLS=true; ENABLE_JSDEEP=true; ENABLE_GF=true; ENABLE_GREP=true
+            ;;
+        deep)
+            ENABLE_PARALLEL=true; ENABLE_BRUTEFORCE=true; ENABLE_MOREURLS=true
+            ENABLE_JSDEEP=true; ENABLE_GF=true; ENABLE_GREP=true; ENABLE_ARJUN=true
+            ENABLE_DIRSEARCH=true; ENABLE_SECRETFINDER=true; ENABLE_GOWITNESS=true
+            ENABLE_NUCLEI_FULL=true; ENABLE_TAKEOVER=true; ENABLE_PORT_SCAN=true
+            ENABLE_ASN=true; ENABLE_VHOST=true; ENABLE_WAF=true; ENABLE_CORS=true
+            ENABLE_METHODS=true; ENABLE_BYPASS=true; ENABLE_SWAGGER=true
+            ENABLE_VALIDATE=true; ENABLE_APIDISC=true; ENABLE_SITEMAP=true; ENABLE_VERIFY=true
+            ;;
+        api)
+            ENABLE_MOREURLS=true; ENABLE_JSDEEP=true; ENABLE_SWAGGER=true
+            ENABLE_VALIDATE=true; ENABLE_APIDISC=true; ENABLE_CORS=true
+            ENABLE_METHODS=true; ENABLE_VERIFY=true
+            ;;
+        infra)
+            ENABLE_PARALLEL=true; ENABLE_ASN=true; ENABLE_PORT_SCAN=true
+            ENABLE_WAF=true; ENABLE_TAKEOVER=true; ENABLE_VHOST=true
+            ;;
+        continuous)
+            # Lean set meant to be re-run repeatedly; leans on checkpoint + diff.
+            ENABLE_MOREURLS=true; ENABLE_JSDEEP=true; ENABLE_GF=true
+            ;;
+        *)
+            print_error "Unknown profile: $1 (passive|fast|deep|api|infra|continuous)"; exit 1
+            ;;
+    esac
+    PROFILE="$1"
+}
+
+# Reject anything that is not a plain hostname before it ever reaches a shell.
+validate_domain() {
+    if ! printf '%s' "$1" | grep -qE '^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'; then
+        print_error "Invalid domain: '$1' (expected e.g. example.com)"
+        exit 1
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────
 # Usage
 # ─────────────────────────────────────────────────────────────
 usage() {
     echo -e "  ${BOLD}Usage:${NC}  $0 ${CYAN}<domain>${NC} ${YELLOW}[flags]${NC}"
+    echo ""
+    echo -e "  ${DIM}${CYAN}─────────────────────────────────────────────────────────────────${NC}"
+    echo -e "  ${BOLD}Profiles (bundle of flags — pick one):${NC}"
+    echo -e "    ${CYAN}-profile passive${NC}     Passive enum + DNS + HTTP + URLs + JS + intel (default)"
+    echo -e "    ${CYAN}-profile fast${NC}        passive + moreurls + jsdeep + gf + grep"
+    echo -e "    ${CYAN}-profile deep${NC}        Everything (active + network intelligence)"
+    echo -e "    ${CYAN}-profile api${NC}         Swagger/OpenAPI + JS APIs + validate + cors + methods"
+    echo -e "    ${CYAN}-profile infra${NC}       ASN + ports + WAF + takeover + vhost"
+    echo -e "    ${CYAN}-profile continuous${NC}  Lean re-runnable set for monitoring (uses diff)"
+    echo ""
+    echo -e "  ${BOLD}Execution control:${NC}"
+    echo -e "    ${CYAN}-timeout <dur>${NC}       Per-tool hard timeout (default ${TOOL_TIMEOUT}, e.g. 30m, 600s)"
+    echo -e "    ${CYAN}-concurrency <n>${NC}     Worker-pool parallelism (default ${CONCURRENCY})"
     echo ""
     echo -e "  ${DIM}${CYAN}─────────────────────────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Subdomain:${NC}"
@@ -482,7 +619,7 @@ step_gowitness() {
                 command -v unzip &>/dev/null && { unzip -o gowitness_output/report.zip -d gowitness_output/report/ 2>/dev/null; rm -f gowitness_output/report.zip; print_success "Report: gowitness_output/report/report.html"; }
             fi
         else
-            print_error "Gowitness failed"; failed_tools+=("gowitness")
+            print_error "Gowitness failed"; failed_tools+=("gowitness"); mark_step_failed "gowitness"
         fi
     else
         [ ! -s live_hosts.txt ] && print_warning "No live hosts to screenshot" || print_warning "gowitness not installed"
@@ -855,7 +992,7 @@ step_dirsearch() {
             dirsearch_count=$(grep -c "200" tyrion_dirsearch.txt 2>/dev/null || echo 0)
             print_success "Dirsearch done — 200s: $dirsearch_count  →  tyrion_dirsearch.txt"
         elif [ $ex -ne 2 ]; then
-            print_error "Dirsearch failed"; failed_tools+=("dirsearch")
+            print_error "Dirsearch failed"; failed_tools+=("dirsearch"); mark_step_failed "dirsearch"
         fi
     else
         [ ! -s live_hosts.txt ] && print_warning "No live hosts" || print_warning "Dirsearch not installed"
@@ -870,7 +1007,7 @@ step_secretfinder() {
         if [ $ex -eq 0 ] || [ $ex -eq 2 ]; then
             [ -s secrets_found.txt ] && { secret_count=$(wc -l < secrets_found.txt); print_success "SecretFinder: $secret_count potential secrets"; } || print_warning "SecretFinder: no secrets found"
         else
-            print_error "SecretFinder failed"; failed_tools+=("secretfinder")
+            print_error "SecretFinder failed"; failed_tools+=("secretfinder"); mark_step_failed "secretfinder"
         fi
     else
         [ ! -s javascript.txt ] && print_warning "No JS files" || print_warning "SecretFinder not installed"
@@ -1582,6 +1719,7 @@ step_api_discovery() {
 # ═════════════════════════════════════════════════════════════
 main() {
     DOMAIN=""
+    PENDING_PROFILE=""
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -1612,6 +1750,18 @@ main() {
             -validate)    ENABLE_VALIDATE=true; shift ;;
             -apidisc)     ENABLE_APIDISC=true; shift ;;
             -sitemap)     ENABLE_SITEMAP=true; shift ;;
+            -profile)
+                shift
+                [ -z "$1" ] && { print_error "-profile needs a value"; usage; }
+                PENDING_PROFILE="$1"; shift ;;
+            -timeout)
+                shift
+                [ -z "$1" ] && { print_error "-timeout needs a value (e.g. 30m)"; usage; }
+                TOOL_TIMEOUT="$1"; shift ;;
+            -concurrency)
+                shift
+                [[ "$1" =~ ^[0-9]+$ ]] || { print_error "-concurrency needs a number"; usage; }
+                CONCURRENCY="$1"; shift ;;
             -h|--help)    show_banner; usage ;;
             *)
                 [ -z "$DOMAIN" ] && DOMAIN="$1" || { echo -e "${RED}Unknown: $1${NC}"; usage; }
@@ -1619,17 +1769,22 @@ main() {
         esac
     done
 
+    [ -n "$PENDING_PROFILE" ] && apply_profile "$PENDING_PROFILE"
+
     clear
     show_banner
 
     [ -z "$DOMAIN" ] && { print_error "No domain provided!"; usage; }
+    validate_domain "$DOMAIN"
 
     OUTPUT_DIR="$DOMAIN"
     START_TIME=$(date +%s)
     calculate_total_steps
 
     echo -e "  ${BOLD}${CYAN}Target  :${NC} ${BOLD}$DOMAIN${NC}"
+    echo -e "  ${BOLD}${CYAN}Profile :${NC} ${BOLD}${PROFILE:-passive (default)}${NC}"
     echo -e "  ${BOLD}${CYAN}Steps   :${NC} ${BOLD}$TOTAL_STEPS${NC}"
+    echo -e "  ${BOLD}${CYAN}Timeout :${NC} ${BOLD}$TOOL_TIMEOUT/tool${NC}   ${DIM}Concurrency: $CONCURRENCY${NC}"
     echo -e "  ${BOLD}${CYAN}Started :${NC} ${BOLD}$(get_timestamp)${NC}"
     echo -e "  ${DIM}${CYAN}─────────────────────────────────────────────────────${NC}"
     echo ""
@@ -1652,6 +1807,8 @@ main() {
     trap 'handle_interrupt' INT TERM
     trap 'handle_exit' EXIT
     checkpoint_init
+    cache_init
+    log_msg "SCAN-START domain=$DOMAIN profile=${PROFILE:-passive} timeout=$TOOL_TIMEOUT concurrency=$CONCURRENCY"
     start_heartbeat
 
     failed_tools=()
@@ -1818,9 +1975,27 @@ main() {
         echo ""
     fi
 
+    # ── Run Metrics (v1.1) ────────────────────────────────────
+    echo -e "${BOLD}${BLUE}Run Metrics:${NC}"
+    echo -e "  ${CYAN}►${NC} Duration:            ${BOLD}$((DUR/60))m $((DUR%60))s${NC}"
+    echo -e "  ${CYAN}►${NC} Steps completed:     ${BOLD}${METRIC_STEPS_OK}${NC}"
+    echo -e "  ${CYAN}►${NC} Steps skipped (done):${BOLD} ${METRIC_STEPS_SKIPPED}${NC}"
+    echo -e "  ${CYAN}►${NC} Steps failed:        ${BOLD}${METRIC_STEPS_FAILED}${NC}"
+    echo -e "  ${CYAN}►${NC} Tool timeouts:       ${BOLD}${METRIC_STEPS_TIMEOUT}${NC}"
+    echo -e "  ${CYAN}►${NC} External tools run:  ${BOLD}${METRIC_TOOLS_RUN}${NC}"
+    echo -e "  ${CYAN}►${NC} Log file:            ${BOLD}${LOG_FILE}${NC}"
+    log_msg "SCAN-END ok=$METRIC_STEPS_OK skipped=$METRIC_STEPS_SKIPPED failed=$METRIC_STEPS_FAILED timeouts=$METRIC_STEPS_TIMEOUT tools=$METRIC_TOOLS_RUN duration=${DUR}s"
+    echo ""
+
     stop_heartbeat
-    print_success "Tyrion404 — Reconnaissance complete!"
-    rm -f "$CHECKPOINT_FILE" 2>/dev/null
+    if [ "$METRIC_STEPS_FAILED" -gt 0 ]; then
+        # Keep the checkpoint so a re-run retries only the failed steps.
+        print_warning "${METRIC_STEPS_FAILED} step(s) did not complete: ${FAILED_STEPS[*]}"
+        print_info "Checkpoint kept — re-run the same command to retry failed steps only."
+    else
+        print_success "Tyrion404 — Reconnaissance complete!"
+        rm -f "$CHECKPOINT_FILE" 2>/dev/null
+    fi
     echo -e "${CYAN}Output: ${BOLD}$OUTPUT_DIR/${NC}\n"
 }
 

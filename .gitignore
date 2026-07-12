@@ -1,0 +1,13 @@
+# Runtime scan artifacts (Tyrion writes a directory per target)
+.checkpoint
+.cache/
+tyrion.log
+
+# Common scan output dirs / files
+*/all_subs.txt
+*/live_hosts.txt
+
+# Editor / OS
+.fuse_hidden*
+*.swp
+.DS_Store
