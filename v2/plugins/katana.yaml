@@ -1,0 +1,7 @@
+# Active crawler (ProjectDiscovery katana).
+name: katana
+category: crawl
+binary: katana
+args: ["-list", "{{infile}}", "-silent", "-jc", "-d", "3", "-ef", "png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,css"]
+parser: lines
+timeout: 20m

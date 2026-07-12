@@ -1,0 +1,8 @@
+# Vulnerability templates (exposures, misconfig, CVEs).
+name: nuclei
+category: vuln-scan
+binary: nuclei
+args: ["-l", "{{infile}}", "-silent", "-jsonl"]
+parser: lines
+timeout: 40m
+rate_limit: 150

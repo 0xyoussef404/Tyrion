@@ -1,0 +1,7 @@
+# Archive URLs (getallurls).
+name: gau
+category: archive-urls
+binary: gau
+args: ["--threads", "5", "{{target}}"]
+parser: lines
+timeout: 15m

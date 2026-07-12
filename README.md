@@ -20,7 +20,18 @@
 
 A comprehensive bash-based advanced reconnaissance tool for bug bounty hunting and security assessments — built with an **Intelligence Layer** that transforms raw recon data into **actionable attack paths**.
 
-> **Where this is going:** Tyrion404 is the stable Bash engine. The next generation — a Go execution engine with a DAG scheduler, SQLite asset store, incremental recon, and a multi-identity authorization workspace — is planned in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Two engines:** `Tyrion404.sh` is the stable Bash tool documented below.
+> **Tyrion V2** — a from-scratch Go platform (DAG engine, queryable store,
+> plugin system, intelligence layer, and a multi-identity authorization
+> workspace, all in one dependency-free binary) — lives in [`v2/`](v2/). See the
+> [platform design](docs/PLATFORM.md) and [roadmap](docs/ROADMAP.md).
+>
+> ```bash
+> cd v2 && go build -o tyrion ./cmd/tyrion
+> ./tyrion scan example.com -profile fast
+> ./tyrion authz example.com request.txt   # multi-identity BFLA testing
+> ./tyrion serve                            # web dashboard
+> ```
 
 ## What's new in v1.1
 

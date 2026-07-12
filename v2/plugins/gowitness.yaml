@@ -1,0 +1,7 @@
+# Screenshots of live hosts.
+name: gowitness
+category: screenshots
+binary: gowitness
+args: ["scan", "file", "-f", "{{infile}}", "--screenshot-path", "gowitness_output"]
+parser: lines
+timeout: 20m

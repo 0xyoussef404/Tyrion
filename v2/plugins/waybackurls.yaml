@@ -1,0 +1,8 @@
+# Archive URLs (waybackurls) — reads domains from stdin.
+name: waybackurls
+category: archive-urls
+binary: waybackurls
+args: []
+stdin_file: "{{infile}}"
+parser: lines
+timeout: 15m

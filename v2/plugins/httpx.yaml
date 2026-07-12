@@ -1,0 +1,8 @@
+# Live HTTP probing with metadata (parsed as JSON by the http-probe stage).
+name: httpx
+category: http-probe
+binary: httpx
+args: ["-l", "{{infile}}", "-silent", "-json", "-title", "-tech-detect", "-status-code", "-server", "-content-length", "-favicon"]
+parser: lines
+timeout: 20m
+rate_limit: 0

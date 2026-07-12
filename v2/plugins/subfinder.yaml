@@ -1,0 +1,8 @@
+# Passive subdomain enumeration (ProjectDiscovery).
+name: subfinder
+category: subdomain-enumeration
+binary: subfinder
+args: ["-d", "{{target}}", "-silent"]
+parser: host-lines
+timeout: 10m
+rate_limit: 0

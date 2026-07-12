@@ -1,0 +1,7 @@
+# DNS resolution / liveness.
+name: dnsx
+category: dns-resolution
+binary: dnsx
+args: ["-l", "{{infile}}", "-silent", "-a", "-resp"]
+parser: lines
+timeout: 15m

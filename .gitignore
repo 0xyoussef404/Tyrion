@@ -7,6 +7,14 @@ tyrion.log
 */all_subs.txt
 */live_hosts.txt
 
+# V2 Go build artifacts
+v2/tyrion
+v2/bin/
+*.test
+
+# V2 scan output (project dirs contain .tyrion/)
+**/.tyrion/
+
 # Editor / OS
 .fuse_hidden*
 *.swp

@@ -1,0 +1,7 @@
+# Fast port scanning.
+name: naabu
+category: port-scan
+binary: naabu
+args: ["-l", "{{infile}}", "-silent"]
+parser: lines
+timeout: 20m

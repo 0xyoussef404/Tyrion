@@ -1,0 +1,7 @@
+# ASN / CIDR mapping.
+name: asnmap
+category: infrastructure
+binary: asnmap
+args: ["-d", "{{target}}", "-silent"]
+parser: lines
+timeout: 5m

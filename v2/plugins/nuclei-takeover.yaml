@@ -1,0 +1,7 @@
+# Subdomain takeover detection (nuclei takeover tag).
+name: nuclei-takeover
+category: takeover
+binary: nuclei
+args: ["-l", "{{infile}}", "-silent", "-tags", "takeover"]
+parser: lines
+timeout: 15m

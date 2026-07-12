@@ -1,0 +1,7 @@
+# Passive subdomain enumeration (assetfinder).
+name: assetfinder
+category: subdomain-enumeration
+binary: assetfinder
+args: ["--subs-only", "{{target}}"]
+parser: host-lines
+timeout: 10m
